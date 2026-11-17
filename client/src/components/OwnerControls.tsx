@@ -74,6 +74,7 @@ export function OwnerControls({ call, callbackNumber }: { call: Call; callbackNu
       await open(thenJoin);
     } finally {
       opening.current = false;
+      joinWanted.current = false; // also after a failed attempt: a later Listen must stay listen-only
     }
   };
   const open = async (thenJoin: boolean): Promise<void> => {

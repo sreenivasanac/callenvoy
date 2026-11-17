@@ -63,8 +63,9 @@ const SW_READY_MS = 3000; // how long an alert waits for the service worker befo
 export async function showNotification(title: string, body: string, callId: string) {
   if (notificationPermission() !== 'granted') return;
   const options = { body, tag: callId, requireInteraction: true, icon: `${BASE}/icon.png`, data: { url: `${BASE}/calls/${callId}` } };
-  const ready = Promise.race([navigator.serviceWorker.ready, new Promise<null>((done) => setTimeout(() => done(null), SW_READY_MS))]);
-  const reg = await registration().then((r) => r && ready).catch(() => null);
+  // registration() checks that service workers exist before anything touches navigator.serviceWorker.
+  const viaWorker = registration().then((r) => (r ? navigator.serviceWorker.ready : null)).catch(() => null);
+  const reg = await Promise.race([viaWorker, new Promise<null>((done) => setTimeout(() => done(null), SW_READY_MS))]);
   if (reg) await reg.showNotification(title, options);
   else new Notification(title, options);
 }
