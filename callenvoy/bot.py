@@ -189,24 +189,29 @@ class OpenAIHearing(OpenAIRealtimeSTTService):
         self._held: list[bytes] = []
         self._commit_held = False
 
-    async def _send_audio(self, audio: bytes):
-        if not self._session_ready:
-            self._held.append(audio)
-            while sum(map(len, self._held)) > self.HOLD_BYTES:
-                self._held.pop(0)
-            return
+    async def _flush(self):
+        """Sends what was held, then the commit that was held with it. Only once the session is ready."""
         held, self._held = self._held, []
         for chunk in held:
             await super()._send_audio(chunk)
         if held and self._commit_held:
             await super()._commit_audio_buffer()
         self._commit_held = False
+
+    async def _send_audio(self, audio: bytes):
+        if not self._session_ready:
+            self._held.append(audio)
+            while sum(map(len, self._held)) > self.HOLD_BYTES:
+                self._held.pop(0)
+            return
+        await self._flush()
         await super()._send_audio(audio)
 
     async def _commit_audio_buffer(self):
         if not self._session_ready:  # the speech ended before the session was ready: commit after the flush
             self._commit_held = bool(self._held)
             return
+        await self._flush()  # the session became ready between two audio frames: held speech goes out first
         await super()._commit_audio_buffer()
 
 

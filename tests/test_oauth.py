@@ -29,13 +29,26 @@ def start(client, name="Claude Code") -> tuple[dict, str, str]:
                                                 "token_endpoint_auth_method": "none"})
     assert reg.status_code == 201, reg.text
     info = reg.json()
+    return (info, *authorize(client, info))
+
+
+def authorize(client, info) -> tuple[str, str]:
+    """Opens /authorize for a registered client. Returns (the console request id, the PKCE verifier)."""
     verifier = "v" * 64
     challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
     r = client.get(f"{BASE}/authorize", params={
         "client_id": info["client_id"], "response_type": "code", "redirect_uri": REDIRECT, "state": "s1",
         "code_challenge": challenge, "code_challenge_method": "S256"})
     assert r.status_code == 302 and "/connect?request=" in r.headers["location"]
-    return info, parse_qs(urlparse(r.headers["location"]).query)["request"][0], verifier
+    return parse_qs(urlparse(r.headers["location"]).query)["request"][0], verifier
+
+
+def finish(client, info, rid, verifier, me) -> str:
+    """The user approves and the client fetches its token. Returns the key."""
+    to = client.post(f"{BASE}/api/oauth/request/{rid}", json={"approve": True}, headers=me).json()["redirect_to"]
+    return client.post(f"{BASE}/token", data={
+        "grant_type": "authorization_code", "code": parse_qs(urlparse(to).query)["code"][0], "redirect_uri": REDIRECT,
+        "client_id": info["client_id"], "code_verifier": verifier}).json()["access_token"]
 
 
 def test_an_agent_without_a_key_is_told_where_to_sign_in(client):
@@ -68,13 +81,17 @@ def test_sign_in_gives_the_agent_a_key_of_the_user_who_approved(client):
     # the token is an agent key of that user, visible in their key list
     assert client.get(f"{BASE}/api/profile", headers={"Authorization": f"Bearer {key}"}).json()["name"] == "Alex"
     assert "Claude Code (signed in)" in [k["name"] for k in store.keys(uid())]
-    # signing the same client in again replaces its key instead of piling keys up
+    # the same agent on a second computer registers as another client: its sign-in leaves the first key alone
     info2, rid2, verifier2 = start(client)
-    to = client.post(f"{BASE}/api/oauth/request/{rid2}", json={"approve": True}, headers=me).json()["redirect_to"]
-    client.post(f"{BASE}/token", data={"grant_type": "authorization_code", "code": parse_qs(urlparse(to).query)["code"][0],
-                                       "redirect_uri": REDIRECT, "client_id": info2["client_id"], "code_verifier": verifier2})
-    assert [k["name"] for k in store.keys(uid())].count("Claude Code (signed in)") == 1
-    assert client.get(f"{BASE}/api/profile", headers={"Authorization": f"Bearer {key}"}).status_code == 401
+    key2 = finish(client, info2, rid2, verifier2, me)
+    assert [k["name"] for k in store.keys(uid())].count("Claude Code (signed in)") == 2
+    assert client.get(f"{BASE}/api/profile", headers={"Authorization": f"Bearer {key}"}).status_code == 200
+    # the same registered client signing in again replaces its own key instead of piling keys up
+    rid3, verifier3 = authorize(client, info2)
+    key3 = finish(client, info2, rid3, verifier3, me)
+    assert [k["name"] for k in store.keys(uid())].count("Claude Code (signed in)") == 2
+    assert client.get(f"{BASE}/api/profile", headers={"Authorization": f"Bearer {key2}"}).status_code == 401
+    assert client.get(f"{BASE}/api/profile", headers={"Authorization": f"Bearer {key3}"}).status_code == 200
 
 
 def test_deny_gives_nothing(client):

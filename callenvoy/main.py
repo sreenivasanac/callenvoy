@@ -391,6 +391,8 @@ async def save_provider(user: Me, provider: str, request: Request):
         body = await request.json()
     except ValueError:
         body = None
+    if provider == "twilio":
+        _no_live_call_on_own_keys(user["id"])
     try:
         await keys.save(user["id"], provider, body)
     except keys.KeyError_ as e:
@@ -401,14 +403,20 @@ async def save_provider(user: Me, provider: str, request: Request):
 
 @api.delete("/api/providers/{provider}")
 async def delete_provider(user: Me, provider: str):
-    """Removing a required key ends the user's live calls on their own keys first (they could not be hung up after)."""
     if provider not in config.PROVIDERS:
         raise calls.CallError("unknown provider", 404)
     if provider in config.REQUIRED_PROVIDERS:
-        await calls.stop_user_calls(user["id"], own_keys_only=True)
+        _no_live_call_on_own_keys(user["id"])
     store.delete_provider_key(user["id"], provider)
     calls.forget_caller_id()
     return keys.view(user)
+
+
+def _no_live_call_on_own_keys(user_id: str) -> None:
+    """A live call's webhooks, hang-up and recording use the Twilio account it was placed on, and a call on own
+    keys needs both required keys to find that account: they stay as they are until the call has ended."""
+    if any(r["own_keys"] for r in store.user_live_calls(user_id)):
+        raise calls.CallError("a call on these keys is still running; hang it up or wait for it to end, then try again", 409)
 
 
 class DeleteAccount(BaseModel):

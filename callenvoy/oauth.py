@@ -107,14 +107,15 @@ class Provider:
         user = store.get_user(authorization_code.subject or "")
         if not user or user["disabled"]:
             raise TokenError("invalid_grant", "the account is not available")
-        name = client_name(client) + SIGNED_IN
         mine = store.keys(user["id"])
-        for old in [k for k in mine if k["name"] == name]:  # signing the same client in again replaces its key
+        # The same registered client signing in again replaces its own key. Another client with the same name
+        # (the same agent on a second computer) is a different client and keeps its key.
+        for old in [k for k in mine if client.client_id and k["client_id"] == client.client_id]:
             store.delete_key(user["id"], old["id"])
             mine.remove(old)
         if len(mine) >= config.MAX_KEYS:
             raise TokenError("invalid_grant", f"this account already has {config.MAX_KEYS} keys; delete one in the console")
-        _row, key = auth.create_key(user["id"], name)
+        _row, key = auth.create_key(user["id"], client_name(client) + SIGNED_IN, client_id=client.client_id)
         return OAuthToken(access_token=key, scope=" ".join(authorization_code.scopes))
 
     async def load_refresh_token(self, client: OAuthClientInformationFull, refresh_token: str) -> RefreshToken | None:

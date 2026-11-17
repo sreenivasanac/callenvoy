@@ -57,11 +57,14 @@ export function setupAlerts(open: (path: string) => void): () => void {
   return () => navigator.serviceWorker.removeEventListener('message', onMessage);
 }
 
+const SW_READY_MS = 3000; // how long an alert waits for the service worker before it shows without it
+
 /** Shows one notification per call (tag = call id, same as web push). */
 export async function showNotification(title: string, body: string, callId: string) {
   if (notificationPermission() !== 'granted') return;
   const options = { body, tag: callId, requireInteraction: true, icon: `${BASE}/icon.png`, data: { url: `${BASE}/calls/${callId}` } };
-  const reg = await registration().then((r) => r && navigator.serviceWorker.ready).catch(() => null);
+  const ready = Promise.race([navigator.serviceWorker.ready, new Promise<null>((done) => setTimeout(() => done(null), SW_READY_MS))]);
+  const reg = await registration().then((r) => r && ready).catch(() => null);
   if (reg) await reg.showNotification(title, options);
   else new Notification(title, options);
 }

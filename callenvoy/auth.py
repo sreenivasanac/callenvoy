@@ -99,11 +99,12 @@ def key_view(row: dict) -> dict:
             "last_used_at": row["last_used_at"], "disabled": bool(row["disabled"])}
 
 
-def create_key(user_id: str, name: str, key: str | None = None) -> tuple[dict, str]:
-    """Stores a new key of the user (or the given one, for the .env import). Returns the row and the full key."""
+def create_key(user_id: str, name: str, key: str | None = None, client_id: str | None = None) -> tuple[dict, str]:
+    """Stores a new key of the user (or the given one, for the .env import). Returns the row and the full key.
+    `client_id`: the OAuth client the key is issued to (a browser sign-in from an agent)."""
     key = key or config.KEY_PREFIX + "".join(secrets.choice(config.KEY_ALPHABET) for _ in range(config.KEY_BODY_LENGTH))
     row = {"id": store.new_id("k_"), "name": name, "key_hash": digest(key), "prefix": key[:config.KEY_DISPLAY_LENGTH],
-           "created_at": store.now(), "last_used_at": None, "disabled": 0, "user_id": user_id}
+           "created_at": store.now(), "last_used_at": None, "disabled": 0, "user_id": user_id, "client_id": client_id}
     store.insert_key(row)
     return row, key
 

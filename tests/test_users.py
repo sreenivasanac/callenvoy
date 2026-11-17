@@ -475,6 +475,7 @@ def test_free_demo_calls_are_few_short_and_ring_no_phone(fresh):
     row = store.get_call(v["id"])
     assert fresh.accounts[-1] == "ACtest" and row["own_keys"] == 0  # the server's account
     assert row["reach"] == "app" and row["max_minutes"] == config.DEMO_MAX_MINUTES
+    assert fresh.created[-1]["time_limit"] == config.DEMO_MAX_MINUTES * 60  # a hard stop, whatever the hold does
     store.update_call(v["id"], status="in_progress")
     with pytest.raises(calls.CallError, match="cannot ring a phone"):
         run(owner.connect(b, v["id"], "join", "phone", "+14155550123"))
@@ -546,9 +547,13 @@ def test_provider_keys_are_checked_saved_encrypted_and_never_sent_back(client, f
     _, agent = auth.create_key(b, "Codex")
     for method, path in (("GET", "/providers"), ("PUT", "/providers/openai"), ("DELETE", "/providers/openai")):
         assert client.request(method, API + path, json={"api_key": "x" * 20}, headers=bearer(agent)).status_code == 403
-    # removing a required key hangs up the live call on it, and real calls need keys again
+    # keys cannot change under a live call that runs on them; after it, removing one means real calls need keys again
+    assert client.delete(f"{API}/providers/openai", headers=cb).status_code == 409
+    assert client.put(f"{API}/providers/twilio", json=twilio, headers=cb).status_code == 409 and keys.own(b)
+    for r in store.user_live_calls(b):
+        store.update_call(r["id"], status="completed")
     v = client.delete(f"{API}/providers/openai", headers=cb).json()
-    assert v["ready"] is False and fresh.updated and keys.own(b) is None
+    assert v["ready"] is False and keys.own(b) is None
     # without the secret nothing can be saved
     monkeypatch.delenv("CALLENVOY_SECRET_KEY")
     r = client.put(f"{API}/providers/openai", json={"api_key": "sk-good-key-0123456789"}, headers=cb)

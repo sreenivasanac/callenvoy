@@ -57,6 +57,7 @@ Tools (prefix `callenvoy_`): `place_call`, `get_call`, `hang_up`, `list_calls`, 
 - Save them in the console under **Settings > Provider keys**. Each key is checked with its provider, stored encrypted, and never shown again (only a short hint such as `AC…a3a8`). An agent key cannot read or change them.
 - The voice follows the saved keys: with a Fish key the call speaks with a Fish voice, without one with an OpenAI voice. The same holds for Deepgram and hearing.
 - Without your own keys you can place 3 short calls to the demo line (a made-up internet provider with a phone menu, a hold and a billing agent). Those run on the server's keys and cannot ring a phone.
+- A required key cannot be replaced or removed while a call on it is running. Recordings stay in the Twilio account that made the call: after you switch to another Twilio account, a recording that was never played here can no longer be fetched.
 - A Twilio trial account plays a trial message and calls only numbers you verified; upgrade it for real calls.
 - Callbacks: set your Twilio number's voice webhook to the address shown under Provider keys. A business that calls back is then forwarded to your callback number, and the call shows in your list.
 

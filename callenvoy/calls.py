@@ -333,7 +333,8 @@ async def place_call(user_id: str, inp: PlaceCallInput) -> dict:
     try:
         sid = await twilio_api.create_call(
             creds, to=number, url=url(f"/twilio/voice/{call_id}"), status_callback=url(f"/twilio/status/{call_id}"),
-            record=bool(s["record"]), time_limit=min(config.MAX_CALL_MINUTES * 60, seconds_left),
+            record=bool(s["record"]),
+            time_limit=min((config.DEMO_MAX_MINUTES if guest else config.MAX_CALL_MINUTES) * 60, seconds_left),
             from_number=from_number)
     except Exception as e:  # noqa: BLE001 - any dial failure ends the call row
         log.warning("dial failed for %s: %s", call_id, e)
@@ -472,12 +473,10 @@ async def stop_call(row: dict) -> str:
     return "hanging up; callenvoy_get_call shows the final state"
 
 
-async def stop_user_calls(user_id: str, drop: bool = False, own_keys_only: bool = False) -> None:
-    """A user was disabled or removed, or removes their provider keys: hang up their live calls. `drop` also
-    forgets the in-memory state (the rows are deleted next, so no final status will close them)."""
+async def stop_user_calls(user_id: str, drop: bool = False) -> None:
+    """A user was disabled or removed: hang up their live calls. `drop` also forgets the in-memory state
+    (the rows are deleted next, so no final status will close them)."""
     for r in store.user_live_calls(user_id):
-        if own_keys_only and not r["own_keys"]:
-            continue
         await stop_call(r)
         if drop:
             await finish(r["id"])

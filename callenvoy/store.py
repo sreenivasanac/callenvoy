@@ -57,7 +57,7 @@ CREATE TABLE IF NOT EXISTS push_subscriptions (
 );
 CREATE TABLE IF NOT EXISTS api_keys (
   id TEXT PRIMARY KEY, name TEXT NOT NULL, key_hash TEXT NOT NULL UNIQUE, prefix TEXT NOT NULL,
-  created_at TEXT NOT NULL, last_used_at TEXT, disabled INTEGER NOT NULL DEFAULT 0, user_id TEXT
+  created_at TEXT NOT NULL, last_used_at TEXT, disabled INTEGER NOT NULL DEFAULT 0, user_id TEXT, client_id TEXT
 );
 CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL, expires_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS signin_tokens (token_hash TEXT PRIMARY KEY, email TEXT NOT NULL, expires_at TEXT NOT NULL);
@@ -70,7 +70,8 @@ CREATE TABLE IF NOT EXISTS provider_keys (
 """
 # Columns added after the first release: (table, column, type). open_db adds them to an existing database.
 # own_keys: the call ran on the user's own provider keys (0: the server's; every call before user keys).
-MIGRATIONS = [("lines", "at", "REAL"), ("calls", "own_keys", "INTEGER NOT NULL DEFAULT 0")]
+# client_id: the OAuth client a key was issued to by a browser sign-in (NULL: a key made in the console).
+MIGRATIONS = [("lines", "at", "REAL"), ("calls", "own_keys", "INTEGER NOT NULL DEFAULT 0"), ("api_keys", "client_id", "TEXT")]
 
 db: sqlite3.Connection | None = None
 # Set by calls.py: called with the call id after every write that changes a call (long-poll wake-up).
