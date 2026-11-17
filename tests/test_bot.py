@@ -188,3 +188,34 @@ def test_voice_and_hearing_follow_the_keys():
     assert isinstance(tts, OpenAITTSService) and tts._settings.voice == "marin"
     assert bot.speech(two, "Cedar")._settings.voice == "cedar"
     assert isinstance(bot.speech(replace(two, fish="f"), "Cedar"), FishAudioTTSService)
+
+
+def test_openai_hearing_holds_audio_until_the_session_is_ready():
+    """Audio and a commit that arrive before OpenAI has our session settings are sent, in order, once it has."""
+    from pipecat.services.openai.stt import OpenAIRealtimeSTTService
+
+    for name in ("_send_audio", "_commit_audio_buffer"):  # the Pipecat internals the class builds on
+        assert callable(getattr(OpenAIRealtimeSTTService, name))
+    h = bot.OpenAIHearing(api_key="sk-test")
+    assert h._session_ready is False
+    sent = []
+
+    async def ws_send(message):
+        sent.append(message["type"])
+
+    async def resample(audio, _from, _to):
+        return audio
+
+    h._ws_send, h._resampler.resample = ws_send, resample
+
+    async def go():
+        await h._send_audio(b"\x01\x00" * 80)
+        await h._send_audio(b"\x02\x00" * 80)
+        await h._commit_audio_buffer()  # the first words ended before the session was ready
+        assert sent == []
+        h._session_ready = True
+        await h._send_audio(b"\x03\x00" * 80)
+        assert sent == ["input_audio_buffer.append"] * 2 + ["input_audio_buffer.commit", "input_audio_buffer.append"]
+        await h._commit_audio_buffer()
+        assert sent[-1] == "input_audio_buffer.commit" and h._held == []
+    run(go())

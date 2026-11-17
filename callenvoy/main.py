@@ -52,9 +52,10 @@ def startup_checks() -> None:
 
 
 def quiet_logs() -> None:
-    """Pipecat logs every spoken sentence at DEBUG and httpx logs URLs with phone numbers at INFO (plan 22.4)."""
+    """Pipecat logs every spoken sentence at DEBUG and httpx logs URLs with phone numbers at INFO (plan 22.4).
+    PIPECAT_LOG_LEVEL=DEBUG turns Pipecat's own log on for a debugging session (it then holds call text)."""
     loguru_logger.remove()
-    loguru_logger.add(sys.stderr, level="WARNING")
+    loguru_logger.add(sys.stderr, level=config.env("PIPECAT_LOG_LEVEL", "WARNING"))
     for name in ("httpx", "openai", "mcp.server.streamable_http"):  # one INFO line per request, no value
         logging.getLogger(name).setLevel(logging.WARNING)
 

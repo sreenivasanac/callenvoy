@@ -171,6 +171,45 @@ TOOLS = {
 OWNER_HAS_CALL = "The person you call for has the call now. Do nothing and stay silent until you are told it is handed back."
 
 
+class OpenAIHearing(OpenAIRealtimeSTTService):
+    """OpenAI's streaming speech-to-text, with the first audio held back until the session is configured.
+
+    A new session runs for about a second on OpenAI's defaults (its own speech detection, no transcription)
+    before our settings arrive. Pipecat sends audio from the first moment, and the speech that began in that
+    second was never transcribed: on a real call the start of the phone menu, and the first words after every
+    key press (a key press opens a new stream and a new session). So audio and a commit that come before the
+    session is ready wait here and are sent, in order, when it is.
+    Written against pipecat-ai 1.15.0 (_session_ready, _send_audio, _commit_audio_buffer; tests/test_bot.py
+    checks that they still exist)."""
+
+    HOLD_BYTES = 16000 * 15  # at most 15 s of 8 kHz 16-bit audio is held; older audio goes first
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._held: list[bytes] = []
+        self._commit_held = False
+
+    async def _send_audio(self, audio: bytes):
+        if not self._session_ready:
+            self._held.append(audio)
+            while sum(map(len, self._held)) > self.HOLD_BYTES:
+                self._held.pop(0)
+            return
+        held, self._held = self._held, []
+        for chunk in held:
+            await super()._send_audio(chunk)
+        if held and self._commit_held:
+            await super()._commit_audio_buffer()
+        self._commit_held = False
+        await super()._send_audio(audio)
+
+    async def _commit_audio_buffer(self):
+        if not self._session_ready:  # the speech ended before the session was ready: commit after the flush
+            self._commit_held = bool(self._held)
+            return
+        await super()._commit_audio_buffer()
+
+
 def hearing(creds, own_vad: bool = True):
     """Speech-to-text for one pipeline: Deepgram when the account has a key for it, else OpenAI (streaming).
     `own_vad` False: the pipeline has no voice-activity detector (the owner's side line), so OpenAI must find
@@ -178,9 +217,9 @@ def hearing(creds, own_vad: bool = True):
     if creds.deepgram:
         return DeepgramSTTService(api_key=creds.deepgram, settings=DeepgramSTTService.Settings(model=config.STT_MODEL))
     if own_vad:
-        return OpenAIRealtimeSTTService(api_key=creds.openai)
-    return OpenAIRealtimeSTTService(api_key=creds.openai, turn_detection={"type": "server_vad"},
-                                    settings=OpenAIRealtimeSTTService.Settings(model=config.OPENAI_VAD_STT_MODEL))
+        return OpenAIHearing(api_key=creds.openai)
+    return OpenAIHearing(api_key=creds.openai, turn_detection={"type": "server_vad"},
+                         settings=OpenAIRealtimeSTTService.Settings(model=config.OPENAI_VAD_STT_MODEL))
 
 
 def speech(creds, voice_name: str | None, voice_id: str | None = None):
