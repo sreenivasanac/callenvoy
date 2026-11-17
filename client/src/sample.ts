@@ -56,6 +56,7 @@ export type Example = {
   audio: string;
   transcript: string;
   outcome: string;
+  note?: string; // what this example shows, one or two sentences
 };
 
 /** Where a recorded call is on the call line (format.STEPS) at `time` seconds into the recording:

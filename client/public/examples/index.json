@@ -9,5 +9,29 @@
     "audio": "northstar-billing.mp3",
     "transcript": "northstar-billing.json",
     "outcome": "The $30 charge was removed from the October bill. Reference number NS-18145."
+  },
+  {
+    "slug": "asks-for-a-detail",
+    "title": "It asks you when it lacks a detail",
+    "asked": "Call my internet provider and get the wrong $30 charge taken off my October bill.",
+    "business": "Northstar Internet (CallEnvoy's demo line)",
+    "goal": "Ask billing to remove a wrong charge of 30 dollars on the October bill and get a reference number.",
+    "duration_seconds": 130,
+    "audio": "asks-for-a-detail.mp3",
+    "transcript": "asks-for-a-detail.json",
+    "outcome": "The $30 charge was removed from the October bill and a reference number NS36618 was provided.",
+    "note": "The agent asked for the service address. The AI did not have it, so it asked the user mid-call, got the answer in a few seconds, and carried on."
+  },
+  {
+    "slug": "openai-voice",
+    "title": "The same call with an OpenAI voice",
+    "asked": "Call my internet provider and get the wrong $30 charge taken off my October bill. Ask for a reference number.",
+    "business": "Northstar Internet (CallEnvoy's demo line)",
+    "goal": "Ask billing to remove a wrong charge of 30 dollars on the October bill and get a reference number.",
+    "duration_seconds": 137,
+    "audio": "openai-voice.mp3",
+    "transcript": "openai-voice.json",
+    "outcome": "The $30 wrong charge was removed from the October bill and a reference number NS-89099 was provided.",
+    "note": "This is how a call sounds with only a Twilio key and an OpenAI key: OpenAI does the hearing and the voice (here: Marin)."
   }
 ]

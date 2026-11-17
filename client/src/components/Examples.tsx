@@ -55,6 +55,7 @@ export function ExampleCard({ example, id, transcriptHeight = 300 }: { example: 
         </View>
         {step === 5 ? <Pill label="Done" tone="done" /> : started ? <Pill label="Playing" tone="info" live /> : null}
       </View>
+      {example.note ? <Text style={[text.base, s.note]}>{example.note}</Text> : null}
       <View style={s.asked}>
         <Text style={text.label}>The user asked their agent</Text>
         <Text style={text.base}>{`“${example.asked}”`}</Text>
@@ -93,6 +94,7 @@ const s = StyleSheet.create({
   card: { backgroundColor: color.card, borderWidth: border.thin, borderColor: color.line, borderRadius: radius.xl, padding: space.xxl, gap: space.l, boxShadow: `0 18px 40px ${color.shadow}` },
   head: { flexDirection: 'row', alignItems: 'flex-start', gap: space.ml },
   title: { fontFamily: font.display, fontSize: font.size.big },
+  note: { color: color.muted },
   asked: { backgroundColor: color.card2, borderRadius: radius.m, paddingVertical: space.ml, paddingHorizontal: space.l },
   result: { borderTopWidth: border.thin, borderTopColor: color.line, paddingTop: space.ml },
   strong: { fontWeight: font.weight.semi },

@@ -1,0 +1,230 @@
+{
+ "business": "Northstar Internet",
+ "goal": "Ask billing to remove a wrong charge of 30 dollars on the October bill and get a reference number.",
+ "duration_seconds": 130,
+ "outcome": {
+  "result": "done",
+  "summary": "The $30 charge was removed from the October bill and a reference number NS36618 was provided.",
+  "details": {
+   "reference_number": "NS36618"
+  }
+ },
+ "lines": [
+  {
+   "n": 0,
+   "who": "them",
+   "text": "Thank you for calling NorthStar",
+   "at": 1.8
+  },
+  {
+   "n": 1,
+   "who": "them",
+   "text": "Internet.",
+   "at": 3.6
+  },
+  {
+   "n": 2,
+   "who": "them",
+   "text": "This is a demo line.",
+   "at": 5.0
+  },
+  {
+   "n": 3,
+   "who": "them",
+   "text": "For billing,",
+   "at": 5.3
+  },
+  {
+   "n": 4,
+   "who": "them",
+   "text": "press one.",
+   "at": 7.0
+  },
+  {
+   "n": 5,
+   "who": "them",
+   "text": "For technical support,",
+   "at": 7.2
+  },
+  {
+   "n": 6,
+   "who": "them",
+   "text": "press two.",
+   "at": 8.7
+  },
+  {
+   "n": 7,
+   "who": "them",
+   "text": "For all other questions,",
+   "at": 9.7
+  },
+  {
+   "n": 8,
+   "who": "them",
+   "text": "press zero.",
+   "at": 11.2
+  },
+  {
+   "n": 9,
+   "who": "event",
+   "text": "pressed 1",
+   "at": 12.8
+  },
+  {
+   "n": 10,
+   "who": "them",
+   "text": "You have",
+   "at": 15.0
+  },
+  {
+   "n": 11,
+   "who": "them",
+   "text": "reached billing.",
+   "at": 15.5
+  },
+  {
+   "n": 12,
+   "who": "them",
+   "text": "Your call is important",
+   "at": 17.3
+  },
+  {
+   "n": 13,
+   "who": "them",
+   "text": "to us.",
+   "at": 17.5
+  },
+  {
+   "n": 14,
+   "who": "them",
+   "text": "The estimated wait time is less than one minute.",
+   "at": 20.4
+  },
+  {
+   "n": 15,
+   "who": "event",
+   "text": "waiting on hold",
+   "at": 23.8
+  },
+  {
+   "n": 16,
+   "who": "them",
+   "text": "Thank you for holding.",
+   "at": 33.3
+  },
+  {
+   "n": 17,
+   "who": "them",
+   "text": "This call may be recorded for quality and training purposes.",
+   "at": 34.6
+  },
+  {
+   "n": 18,
+   "who": "them",
+   "text": "Please continue to hold.",
+   "at": 38.2
+  },
+  {
+   "n": 19,
+   "who": "them",
+   "text": "And the next available agent will be with you shortly.",
+   "at": 42.7
+  },
+  {
+   "n": 20,
+   "who": "them",
+   "text": "Your call is important to us.",
+   "at": 52.7
+  },
+  {
+   "n": 21,
+   "who": "them",
+   "text": "Please stay on the line.",
+   "at": 54.6
+  },
+  {
+   "n": 22,
+   "who": "them",
+   "text": "Thanks for holding. This is Maria in billing. How can I help you today?",
+   "at": 68.5
+  },
+  {
+   "n": 23,
+   "who": "ai",
+   "text": "Hi Maria, I’m calling on behalf of Alex Morgan. There’s a wrong charge of 30 dollars on the October bill—could you please remove it and provide a reference number?",
+   "at": 71.9
+  },
+  {
+   "n": 24,
+   "who": "event",
+   "text": "alert sent",
+   "at": 81.9
+  },
+  {
+   "n": 25,
+   "who": "them",
+   "text": "Absolutely. I can help with that. May I have the service address",
+   "at": 84.8
+  },
+  {
+   "n": 26,
+   "who": "them",
+   "text": "or the account phone number for Alex Morgan to look up the account?",
+   "at": 91.4
+  },
+  {
+   "n": 27,
+   "who": "event",
+   "text": "asked owner: Can you provide the service address or the account phone number for your Northstar Internet account?",
+   "at": 92.3
+  },
+  {
+   "n": 28,
+   "who": "event",
+   "text": "answer sent: The service address is 12 Oak Street, Springfield.",
+   "at": 96.3
+  },
+  {
+   "n": 29,
+   "who": "ai",
+   "text": "The service address is 12 Oak Street, Springfield.",
+   "at": 96.4
+  },
+  {
+   "n": 30,
+   "who": "them",
+   "text": "Thank you. I've located the account",
+   "at": 102.9
+  },
+  {
+   "n": 31,
+   "who": "them",
+   "text": "and removed the thirty dollars charge from the October bill. A credit will appear on the next statement. Your reference number is n s three six six one eight. That's n as in Nancy, s as in Sam,",
+   "at": 107.4
+  },
+  {
+   "n": 32,
+   "who": "them",
+   "text": "Is there anything else I can help you with today?",
+   "at": 117.9
+  },
+  {
+   "n": 33,
+   "who": "ai",
+   "text": "Thank you, I have the reference number NS36618. That’s all for today. Have a great day, goodbye.",
+   "at": 120.2
+  },
+  {
+   "n": 34,
+   "who": "event",
+   "text": "AI ended the call",
+   "at": 121.4
+  },
+  {
+   "n": 35,
+   "who": "event",
+   "text": "hang up requested",
+   "at": 129.1
+  }
+ ]
+}
