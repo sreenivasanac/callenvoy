@@ -10,6 +10,7 @@ import { border, color, font, maxContent, space } from '../theme';
 import { AccountCard } from './Account';
 import { CallOptions, checkNumbers, MODE_OPTIONS, type Options } from './CallOptions';
 import { AudioCheck, DeviceAlerts } from './DeviceAlerts';
+import { ProviderKeysCard } from './Providers';
 import { Button, Card, Cell, Disclosure, Note, Pill, Row, Screen, Segmented, Stack, StatusLine, SwitchRow, T, TextField, TextLink, text } from './ui';
 import { VoicePicker } from './VoicePicker';
 
@@ -48,6 +49,7 @@ const GROUPS: { title: string; fields: [ProfileField, string][] }[] = [
 
 const SECTIONS = [
   ['settings-profile', 'Profile'],
+  ['settings-keys', 'Provider keys'],
   ['settings-defaults', 'Call defaults'],
   ['settings-voice', 'Voice'],
   ['settings-alerts', 'Alerts'],
@@ -69,7 +71,7 @@ function toForm(settings: Settings): Form {
   };
 }
 
-/** `focus: 'name'` moves to the name field (the New call form links there when the name is missing). */
+/** `focus: 'name'` moves to the name field (the New call form links there when the name is missing); `focus: 'keys'` to the provider keys. */
 export function SettingsForm({ config, settings, focus }: { config: Config; settings: Settings; focus?: string }) {
   const { save, loadCallerId } = useSettings();
   const callerId = useCallerId();
@@ -91,6 +93,10 @@ export function SettingsForm({ config, settings, focus }: { config: Config; sett
   };
   useEffect(() => {
     if (focus === 'name') scrollToId('settings-profile', NAME_FIELD);
+    if (focus !== 'keys') return;
+    // After the first layout: at mount the page is not laid out yet, and the jump would go nowhere.
+    const t = setTimeout(() => scrollToId('settings-keys'), 250);
+    return () => clearTimeout(t);
   }, [focus]);
   const verified = !!callerId?.verified && !!callerId.number && callerId.number === settings.callback_number;
 
@@ -164,10 +170,13 @@ export function SettingsForm({ config, settings, focus }: { config: Config; sett
 
   return (
     <Screen footer={bar}>
-      <View role="navigation" aria-label="Settings sections" style={s.sections}>
-        {SECTIONS.map(([id, label]) => (
-          <TextLink key={id} label={label} onPress={() => scrollToId(id)} />
-        ))}
+      <View>
+        <T v="h1">Settings</T>
+        <View role="navigation" aria-label="Settings sections" style={s.sections}>
+          {SECTIONS.map(([id, label]) => (
+            <TextLink key={id} label={label} onPress={() => scrollToId(id)} />
+          ))}
+        </View>
       </View>
       <Card label="Profile" id="settings-profile">
         <Stack>
@@ -212,6 +221,8 @@ export function SettingsForm({ config, settings, focus }: { config: Config; sett
         </Stack>
       </Card>
 
+      <ProviderKeysCard id="settings-keys" />
+
       <Card label="Call defaults" id="settings-defaults">
         <Stack>
           <View>
@@ -235,7 +246,7 @@ export function SettingsForm({ config, settings, focus }: { config: Config; sett
             {[
               `${settings.max_minutes} minutes planned per call, ${config.ranges.max_minutes[1]} at most`,
               `Up to ${l.max_concurrent_calls} calls at the same time`,
-              `${l.daily_minute_cap} call minutes per day${l.minutes_used_today != null ? ` (${l.minutes_used_today} used today)` : ''}`,
+              `${l.daily_minute_cap} call minutes per day${(l.my_minutes_today ?? l.minutes_used_today) != null ? ` (${l.my_minutes_today ?? l.minutes_used_today} used today)` : ''}`,
               'US and Canada numbers only; premium and Caribbean area codes are blocked',
               `Calls are ${settings.record_calls ? '' : 'not '}recorded by default (setting above)`,
             ].map((t) => (
@@ -253,6 +264,12 @@ export function SettingsForm({ config, settings, focus }: { config: Config; sett
             AI voice
           </T>
           <VoicePicker label="Default voice" voices={config.voices} value={f.voice} onChange={set('voice')} help="An agent can still pick a different voice for a single call." />
+          {config.voice_provider === 'openai' ? (
+            <View style={s.inline}>
+              <T v="fine">These are OpenAI voices. A Fish Audio key adds more voices, including Indian English.</T>
+              <TextLink label="Add a Fish Audio key" onPress={() => scrollToId('settings-keys')} />
+            </View>
+          ) : null}
         </Stack>
       </Card>
 
@@ -335,10 +352,10 @@ const s = StyleSheet.create({
   sections: { flexDirection: 'row', flexWrap: 'wrap', columnGap: space.xl, rowGap: space.xs },
   limits: { gap: space.s },
   limit: { color: color.soft },
-  bar: { borderTopWidth: border.thin, borderTopColor: color.line, backgroundColor: color.card, paddingVertical: space.ml, paddingHorizontal: space.xl },
+  bar: { borderTopWidth: border.thin, borderTopColor: color.line, backgroundColor: color.card, paddingVertical: space.ml, paddingHorizontal: space.xl, boxShadow: `0 -6px 18px ${color.shadow}` },
   barInner: { width: '100%', maxWidth: maxContent, alignSelf: 'center', flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: space.ml },
   barText: { flexGrow: 1, flexShrink: 1 },
   err: { marginTop: space.s },
-  inline: { flexDirection: 'row', flexWrap: 'wrap', gap: space.sm },
+  inline: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: space.sm },
   code: { fontWeight: font.weight.bold },
 });

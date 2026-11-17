@@ -2,6 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { installPrompt, setup } from '../src/agentSetup.ts';
+import { signInSetup } from '../src/agentSetup.ts';
 
 const URL = 'https://example.com/callenvoy/mcp';
 const KEY = 'ce_live_abcdefghjkmnpqrstuvwxyz2345678';
@@ -35,4 +36,14 @@ test('clients without headers: the key in the address, with a warning', () => {
 test('install prompt: address, header, key-in-address fallback and the check tool', () => {
   const p = installPrompt(URL, KEY);
   for (const part of [`Server address: ${URL}`, `Authorization: Bearer ${KEY}`, `${URL}/${KEY}`, 'callenvoy_get_profile']) assert.ok(p.includes(part), part);
+});
+
+test('browser sign-in set-up carries the address and never a key', () => {
+  const all = signInSetup('https://example.com/mcp');
+  for (const c of Object.values(all)) {
+    assert.ok(c.code.includes('https://example.com/mcp'));
+    assert.ok(!/Bearer|YOUR_KEY|ce_live_/.test(c.code + c.steps.join(' ')));
+    assert.ok(c.steps.length >= 2);
+  }
+  assert.doesNotThrow(() => JSON.parse(all.cursor.code));
 });

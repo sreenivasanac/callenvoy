@@ -1,4 +1,5 @@
-// The product page's sample call (public/sample/call.json): a real recorded call to CallEnvoy's demo line.
+// Recorded example calls (public/examples): real calls to CallEnvoy's demo line, shown on the product page and on /examples.
+// To add one: put <slug>.mp3 and <slug>.json (a SampleCall) into public/examples and add an entry to index.json.
 import type { Call, Line } from './api';
 
 export type SampleCall = {
@@ -42,4 +43,31 @@ export function sampleToCall(s: SampleCall): Call {
     ended_at: at(s.duration_seconds),
     transcript: s.lines.map((l) => ({ ...l, t: at(l.at ?? 0) })),
   };
+}
+
+/** One entry of public/examples/index.json. `audio` and `transcript` are file names in that folder. */
+export type Example = {
+  slug: string;
+  title: string;
+  asked: string; // what the user told their agent
+  business: string;
+  goal: string;
+  duration_seconds: number;
+  audio: string;
+  transcript: string;
+  outcome: string;
+};
+
+/** Where a recorded call is on the call line (format.STEPS) at `time` seconds into the recording:
+ *  0 dialing, 1 in the menu (the other side speaks), 2 on hold, 3 talking to a person, 5 ended. */
+export function sampleStep(lines: SampleCall['lines'], time: number, duration: number): number {
+  const at = (l: SampleCall['lines'][number] | undefined) => l?.at ?? Infinity;
+  if (duration > 0 && time >= duration - 0.5) return 5;
+  const firstAi = lines.findIndex((l) => l.who === 'ai');
+  // The person: the line of the other side that the AI first answers.
+  const person = firstAi > 0 ? lines.slice(0, firstAi).reverse().find((l) => l.who === 'them') : undefined;
+  if (time >= at(person)) return 3;
+  if (time >= at(lines.find((l) => l.who === 'event' && /hold/i.test(l.text)))) return 2;
+  if (time >= at(lines.find((l) => l.who === 'them'))) return 1;
+  return 0;
 }

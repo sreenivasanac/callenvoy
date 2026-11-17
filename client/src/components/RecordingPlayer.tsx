@@ -163,7 +163,7 @@ const s = StyleSheet.create({
     height: seekBar.thumb,
     marginLeft: -seekBar.thumb / 2,
     borderRadius: radius.pill,
-    backgroundColor: color.fg,
+    backgroundColor: color.card,
     borderWidth: border.outline,
     borderColor: color.brand,
   },

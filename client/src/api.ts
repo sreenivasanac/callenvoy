@@ -1,9 +1,9 @@
 // Typed client for the CallEnvoy console API (plan sections 3, 4, 4a).
 
-export const API_BASE = process.env.EXPO_PUBLIC_API_BASE ?? '/callenvoy';
+export const API_BASE = process.env.EXPO_PUBLIC_API_BASE ?? ''; // same origin, at the root of the host
 /** Where the console's own static files (sw.js, mic-worklet.js, icon) are served: the export's base path.
  *  Not API_BASE: in local dev the API is on another origin, and a service worker must be same-origin. */
-export const WEB_BASE = process.env.EXPO_BASE_URL || '/callenvoy';
+export const WEB_BASE = process.env.EXPO_BASE_URL || '';
 
 export type CallStatus = 'queued' | 'dialing' | 'in_progress' | 'completed' | 'no_answer' | 'busy' | 'failed' | 'canceled';
 export type Phase = 'menu' | 'on_hold' | 'talking' | 'connecting_owner' | 'owner_on_call' | null;
@@ -92,13 +92,38 @@ export type ProfileField =
   | 'known_traveler_number'
   | 'redress_number';
 
-export type Voice = { name: string; gender: string; accent: string; style: string; sample_url: string; default?: boolean };
+/** `provider`: who speaks this voice. The list holds only the voices this user can use. */
+export type Voice = { name: string; gender: string; accent: string; style: string; sample_url: string; default?: boolean; provider?: SpeechProvider };
+export type SpeechProvider = 'fish' | 'openai';
+export type HearingProvider = 'deepgram' | 'openai';
+
+/** Whose keys place this user's calls. `ready`: real calls can be placed (own Twilio and OpenAI keys, or the
+ *  server's for the admin). Without that, only the free demo-line calls (`demo_calls_left`). */
+export type KeysState = { ready: boolean; server_keys: boolean; demo_calls_left: number; can_save: boolean };
+
+export type ProviderName = 'twilio' | 'openai' | 'deepgram' | 'fish';
+/** A saved provider key as shown: never the key, only a hint such as "AC...a3a8". */
+export type ProviderKey = { saved: boolean; hint: string | null; checked_at: string | null; from_number?: string | null };
+export type Providers = {
+  can_save: boolean; // false: the server has no encryption key, so nobody can save keys
+  ready: boolean;
+  server_keys: boolean; // the admin: calls use the server's own keys
+  hearing: HearingProvider;
+  voice_provider: SpeechProvider;
+  inbound_url: string; // the voice webhook for the user's Twilio number (callbacks from a business)
+  providers: Record<ProviderName, ProviderKey>;
+};
+export type TwilioKeys = { account_sid: string; auth_token: string; from_number: string };
 
 export type Config = {
   app_name: string;
   mcp_url: string;
   voices: Voice[];
-  limits: { max_call_minutes: number; max_concurrent_calls: number; daily_minute_cap: number; minutes_used_today?: number };
+  /** Per user. `minutes_used_today` is the same number as `my_minutes_today` (kept for older consoles). */
+  limits: { max_call_minutes: number; max_concurrent_calls: number; daily_minute_cap: number; minutes_used_today?: number; my_minutes_today?: number };
+  keys?: KeysState;
+  voice_provider?: SpeechProvider;
+  hearing?: HearingProvider;
   ranges: Record<'max_minutes' | 'alert_wait_seconds' | 'phone_ring_seconds', [number, number]>;
   text_limits: Record<string, number>;
   vapid_public_key: string | null;
@@ -152,6 +177,7 @@ export type AdminUser = {
   minutes: number;
   minutes_today: number;
   live_calls: number;
+  own_keys?: boolean; // has saved Twilio and OpenAI keys (else: demo calls only)
 };
 
 let onUnauthorized: () => void = () => {};
@@ -225,5 +251,13 @@ export const api = {
   updateUser: (id: string, disabled: boolean) => request<unknown>('PATCH', `/api/admin/users/${encodeURIComponent(id)}`, { disabled }),
   removeUser: (id: string) => request<unknown>('DELETE', `/api/admin/users/${encodeURIComponent(id)}`),
   setSignups: (open: boolean) => request<unknown>('PUT', '/api/admin/settings', { signups_open: open }),
+  providers: () => request<Providers>('GET', '/api/providers'),
+  /** The server checks the key with the provider before it saves; a bad key is a 400 with `field`. */
+  saveProvider: (name: ProviderName, body: TwilioKeys | { api_key: string }) => request<Providers>('PUT', `/api/providers/${name}`, body),
+  removeProvider: (name: ProviderName) => request<Providers>('DELETE', `/api/providers/${name}`),
+  deleteAccount: (confirm: string) => request<unknown>('DELETE', '/api/account', { confirm }),
+  /** An agent's sign-in request (the /connect page). 404: expired or unknown. */
+  oauthRequest: (id: string) => request<{ client_name: string; redirect_host: string }>('GET', `/api/oauth/request/${encodeURIComponent(id)}`),
+  answerOauthRequest: (id: string, approve: boolean) => request<{ redirect_to: string }>('POST', `/api/oauth/request/${encodeURIComponent(id)}`, { approve }),
 };
 

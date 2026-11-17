@@ -8,3 +8,12 @@ export function setTitle(title: string): () => void {
     document.title = old;
   };
 }
+
+/** Adds the theme's colour variables to the page (once). Called before the first render. */
+export function installTheme(css: string) {
+  if (document.getElementById('ce-theme')) return;
+  const style = document.createElement('style');
+  style.id = 'ce-theme';
+  style.textContent = css;
+  document.head.appendChild(style);
+}

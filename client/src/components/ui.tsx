@@ -105,7 +105,7 @@ export function T({
   );
 }
 
-type Kind = 'primary' | 'secondary' | 'danger' | 'go' | 'link' | 'dark' | 'outline';
+type Kind = 'primary' | 'secondary' | 'danger' | 'go' | 'link' | 'outline';
 
 export function Button({
   label,
@@ -164,10 +164,13 @@ export function TextLink({ label, onPress }: { label: string; onPress: () => voi
   );
 }
 
+/** Spread on a View: the slow pulse of something that waits for the user (theme.ts themeCss; off with reduced motion). */
+export const PULSE = { dataSet: { pulse: 'on' } } as object;
+
 export function Pill({ label, tone = 'neutral', live }: { label: string; tone?: Tone; live?: boolean }) {
   return (
     <View style={[s.pill, pill[tone]]}>
-      {live && <View style={[s.dot, tone === 'ok' && s.dotOnOk]} aria-hidden />}
+      {live && <View style={[s.dot, { backgroundColor: pillText[tone].color }]} aria-hidden {...(tone === 'alert' ? PULSE : null)} />}
       <Text style={[s.pillText, pillText[tone]]}>{label}</Text>
     </View>
   );
@@ -346,9 +349,9 @@ export function Chips<V extends string>({
             role="radio"
             aria-checked={on}
             onPress={() => onChange(v)}
-            style={(st: PressState) => [s.chip, on && s.segOn, !on && st.hovered && s.segHover]}
+            style={(st: PressState) => [s.chip, on && s.chipOn, !on && st.hovered && s.segHover]}
           >
-            <Text style={[s.chipText, on && s.segTextOn]}>{t}</Text>
+            <Text style={[s.chipText, on && s.chipTextOn]}>{t}</Text>
           </Pressable>
         );
       })}
@@ -436,10 +439,10 @@ export function SwitchRow({
         value={value}
         onValueChange={onChange}
         disabled={disabled}
-        trackColor={{ false: color.secondary, true: color.brand }}
-        thumbColor={color.fg}
+        trackColor={{ false: color.edge, true: color.brand }}
+        thumbColor={color.card}
         // react-native-web: colour of the thumb when on
-        {...({ activeThumbColor: color.fg } as object)}
+        {...({ activeThumbColor: color.card } as object)}
       />
     </View>
   );
@@ -492,23 +495,25 @@ export function AudioMeter({ level, label }: { level: number; label: string }) {
   );
 }
 
+const display = { fontFamily: font.display, letterSpacing: font.tracking.head } as const;
+
 export const text = StyleSheet.create({
-  hero: { color: color.fg, fontSize: font.size.hero, fontWeight: font.weight.heavy, lineHeight: font.size.hero * font.heroLineHeight },
-  h1: { color: color.fg, fontSize: font.size.h1, fontWeight: font.weight.bold, marginBottom: space.ml },
-  h2: { color: color.fg, fontSize: font.size.h2, fontWeight: font.weight.bold, marginBottom: space.ml },
+  hero: { ...display, color: color.fg, fontSize: font.size.hero, fontWeight: font.weight.heavy, lineHeight: font.size.hero * font.heroLineHeight, letterSpacing: font.tracking.hero },
+  h1: { ...display, color: color.fg, fontSize: font.size.h1, fontWeight: font.weight.bold, lineHeight: font.size.h1 * font.headLineHeight, marginBottom: space.ml },
+  h2: { ...display, color: color.fg, fontSize: font.size.h2, fontWeight: font.weight.bold, lineHeight: font.size.h2 * font.headLineHeight, marginBottom: space.ml },
   h3: { color: color.fg, fontSize: font.size.h3, fontWeight: font.weight.bold },
   body: { color: color.fg, fontSize: font.size.body, lineHeight: font.size.body * lineHeight },
   base: { color: color.fg, fontSize: font.size.base, lineHeight: font.size.base * lineHeight },
   m: { color: color.fg, fontSize: font.size.m },
   soft: { color: color.soft, fontSize: font.size.body, lineHeight: font.size.body * lineHeight },
   muted: { color: color.muted, fontSize: font.size.body, lineHeight: font.size.body * lineHeight },
-  fine: { color: color.muted, fontSize: font.size.s },
-  label: { color: color.muted, fontSize: font.size.s, marginBottom: space.xs },
+  fine: { color: color.muted, fontSize: font.size.s, lineHeight: font.size.s * lineHeight },
+  label: { color: color.soft, fontSize: font.size.s, fontWeight: font.weight.semi, marginBottom: space.xs },
   err: { color: color.err, fontSize: font.size.m },
-  link: { color: color.link, fontSize: font.size.base, textDecorationLine: 'underline' },
-  mono: { color: color.soft, fontSize: font.size.s, fontFamily: font.mono },
-  brand: { color: color.link, fontSize: font.size.h2, fontWeight: font.weight.heavy, letterSpacing: font.tracking.brand },
-  subhead: { color: color.muted, fontSize: font.size.s, fontWeight: font.weight.bold, textTransform: 'uppercase', letterSpacing: font.tracking.subhead, marginTop: space.sm },
+  link: { color: color.link, fontSize: font.size.base, fontWeight: font.weight.semi, textDecorationLine: 'underline' },
+  mono: { color: color.soft, fontSize: font.size.xs, fontFamily: font.mono },
+  brand: { fontFamily: font.display, color: color.fg, fontSize: font.size.h2, fontWeight: font.weight.heavy, letterSpacing: font.tracking.brand },
+  subhead: { color: color.fg, fontSize: font.size.base, fontWeight: font.weight.bold, marginTop: space.sm },
 });
 
 const s = StyleSheet.create({
@@ -521,8 +526,8 @@ const s = StyleSheet.create({
   stack: { gap: space.l },
   row: { gap: space.l },
   rowWide: { flexDirection: 'row' },
-  btn: { borderRadius: radius.m, paddingVertical: space.input, paddingHorizontal: space.btn, alignItems: 'center', justifyContent: 'center', alignSelf: 'flex-start' },
-  btnSmall: { paddingVertical: space.s, paddingHorizontal: space.ml },
+  btn: { borderRadius: radius.pill, paddingVertical: space.input, paddingHorizontal: space.xxl, alignItems: 'center', justifyContent: 'center', alignSelf: 'flex-start' },
+  btnSmall: { paddingVertical: space.s + 1, paddingHorizontal: space.l },
   btnBig: { padding: space.l, alignSelf: 'stretch' },
   btnFull: { alignSelf: 'stretch' },
   btnActive: { opacity: pressedOpacity },
@@ -530,18 +535,17 @@ const s = StyleSheet.create({
   btnText: { fontSize: font.size.body, fontWeight: font.weight.semi },
   btnTextSmall: { fontSize: font.size.m },
   btnTextBig: { fontSize: font.size.l },
-  pill: { flexDirection: 'row', alignItems: 'center', alignSelf: 'flex-start', maxWidth: '100%', paddingVertical: space.xs, paddingHorizontal: space.ml, borderRadius: radius.pill },
-  pillText: { fontSize: font.size.s, fontWeight: font.weight.bold, flexShrink: 1 },
+  pill: { flexDirection: 'row', alignItems: 'center', alignSelf: 'flex-start', maxWidth: '100%', paddingVertical: space.bar, paddingHorizontal: space.m, borderRadius: radius.pill, borderWidth: border.thin, borderColor: 'transparent' },
+  pillText: { fontSize: font.size.xs, fontWeight: font.weight.semi, flexShrink: 1 },
   dot: { width: space.sm, height: space.sm, borderRadius: radius.pill, backgroundColor: color.ok, marginRight: space.s },
-  dotOnOk: { backgroundColor: color.okInk },
   note: { borderRadius: radius.m, paddingVertical: space.m, paddingHorizontal: space.ml, gap: space.xs },
   noteText: { fontSize: font.size.base, lineHeight: font.size.base * lineHeight },
   bold: { fontWeight: font.weight.bold },
   semi: { fontWeight: font.weight.semi },
   steps: { gap: space.xxs, marginTop: space.s },
-  stepNo: { width: stepBadge, height: stepBadge, borderRadius: radius.pill, borderWidth: border.thin, borderColor: color.brand, backgroundColor: color.selected, alignItems: 'center', justifyContent: 'center' },
+  stepNo: { width: stepBadge, height: stepBadge, borderRadius: radius.pill, borderWidth: border.thin, borderColor: color.edge, backgroundColor: color.card, alignItems: 'center', justifyContent: 'center' },
   stepNoDone: { borderColor: color.ok, backgroundColor: color.ok },
-  stepNoText: { color: color.white, fontSize: font.size.m, fontWeight: font.weight.bold },
+  stepNoText: { color: color.fg, fontSize: font.size.m, fontWeight: font.weight.bold },
   stepNoTextDone: { color: color.okInk },
   optional: { color: color.muted, fontWeight: font.weight.normal },
   fieldMsg: { marginTop: space.s },
@@ -551,24 +555,26 @@ const s = StyleSheet.create({
     paddingHorizontal: space.ml,
     borderRadius: radius.m,
     borderWidth: border.thin,
-    borderColor: color.line,
-    backgroundColor: color.card2,
+    borderColor: color.edge,
+    backgroundColor: color.card,
     color: color.fg,
     fontSize: font.size.body,
   },
-  inputBad: { borderColor: color.bad },
-  seg: { flexDirection: 'row', gap: space.xs, padding: space.xs, backgroundColor: color.card2, borderWidth: border.thin, borderColor: color.line, borderRadius: radius.l },
-  segBtn: { flex: 1, paddingVertical: space.seg, paddingHorizontal: space.m, borderRadius: radius.s, alignItems: 'center', justifyContent: 'center' },
-  segOn: { backgroundColor: color.selected, borderWidth: border.thin, borderColor: color.brand },
+  inputBad: { borderColor: color.bad, borderWidth: border.outline },
+  seg: { flexDirection: 'row', gap: space.xs, padding: space.xs, backgroundColor: color.card2, borderRadius: radius.l },
+  segBtn: { flex: 1, paddingVertical: space.seg, paddingHorizontal: space.m, borderRadius: radius.s, alignItems: 'center', justifyContent: 'center', borderWidth: border.thin, borderColor: 'transparent' },
+  segOn: { backgroundColor: color.card, borderColor: color.brand },
   segHover: { backgroundColor: color.card },
   chips: { flexDirection: 'row', flexWrap: 'wrap', gap: space.s },
-  chip: { paddingVertical: space.s, paddingHorizontal: space.ml, borderRadius: radius.pill, borderWidth: border.thin, borderColor: color.line, backgroundColor: color.card2 },
-  chipText: { color: color.muted, fontSize: font.size.m, fontWeight: font.weight.semi },
-  block: { backgroundColor: color.bg, borderWidth: border.thin, borderColor: color.line, borderRadius: radius.m, paddingVertical: space.m, paddingHorizontal: space.ml, paddingRight: space.x5 + space.x3 + space.xs },
-  blockText: { lineHeight: font.size.s * font.monoLineHeight },
+  chip: { paddingVertical: space.s, paddingHorizontal: space.l, borderRadius: radius.pill, borderWidth: border.thin, borderColor: color.line, backgroundColor: color.card },
+  chipOn: { backgroundColor: color.fg, borderColor: color.fg },
+  chipText: { color: color.soft, fontSize: font.size.m, fontWeight: font.weight.semi },
+  chipTextOn: { color: color.bg },
+  block: { backgroundColor: color.card2, borderRadius: radius.m, paddingVertical: space.ml, paddingHorizontal: space.l, paddingRight: space.x5 + space.x4 },
+  blockText: { lineHeight: font.size.xs * font.monoLineHeight, color: color.fg },
   copy: { position: 'absolute', top: space.s, right: space.s },
-  segText: { color: color.muted, fontSize: font.size.body, fontWeight: font.weight.semi, textAlign: 'center' },
-  segTextOn: { color: color.white },
+  segText: { color: color.soft, fontSize: font.size.base, fontWeight: font.weight.semi, textAlign: 'center' },
+  segTextOn: { color: color.onSelected },
   lineRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: space.l, paddingVertical: space.ml, borderTopWidth: border.thin, borderTopColor: color.line },
   tableRow: { flexDirection: 'row', alignItems: 'center', gap: space.ml },
   tableHead: { paddingHorizontal: space.xs, paddingBottom: space.sm, borderBottomWidth: border.thin, borderBottomColor: color.line },
@@ -576,10 +582,10 @@ const s = StyleSheet.create({
   lineFirst: { borderTopWidth: 0, paddingTop: 0 },
   scrim: { flex: 1, backgroundColor: color.scrim, justifyContent: 'flex-end', padding: space.ml },
   scrimWide: { justifyContent: 'center', alignItems: 'center' },
-  sheet: { width: '100%', backgroundColor: color.card, borderWidth: border.thin, borderColor: color.line, borderRadius: radius.xl, padding: space.xxl, gap: space.ml },
+  sheet: { width: '100%', backgroundColor: color.card, borderWidth: border.thin, borderColor: color.line, borderRadius: radius.xl, padding: space.x3, gap: space.ml },
   sheetWide: { maxWidth: gateWidth },
   noMargin: { marginBottom: 0 },
-  meterRow: { flexDirection: 'row', alignItems: 'center', gap: space.ml, backgroundColor: color.card2, borderWidth: border.thin, borderColor: color.line, borderRadius: radius.m, paddingVertical: space.m, paddingHorizontal: space.ml },
+  meterRow: { flexDirection: 'row', alignItems: 'center', gap: space.ml, backgroundColor: color.card2, borderRadius: radius.m, paddingVertical: space.m, paddingHorizontal: space.ml },
   meter: { flexDirection: 'row', alignItems: 'flex-end', gap: space.bar, height: meter.height },
   bar: { width: space.s, borderRadius: radius.bar, backgroundColor: color.line },
   barOn: { backgroundColor: color.ok },
@@ -590,44 +596,47 @@ const btn = StyleSheet.create({
   secondary: { backgroundColor: color.secondary },
   danger: { backgroundColor: color.danger },
   go: { backgroundColor: color.ok },
-  link: { backgroundColor: 'transparent', paddingHorizontal: 0, paddingVertical: space.sm },
-  dark: { backgroundColor: color.okInk },
-  outline: { backgroundColor: 'transparent', borderWidth: border.outline, borderColor: color.okInk },
+  link: { backgroundColor: 'transparent', paddingHorizontal: 0, paddingVertical: space.sm, borderRadius: radius.s },
+  outline: { backgroundColor: 'transparent', borderWidth: border.thin, borderColor: color.edge },
 });
 const btnText = StyleSheet.create({
-  primary: { color: color.white },
-  secondary: { color: color.white },
-  danger: { color: color.white },
+  primary: { color: color.onAccent },
+  secondary: { color: color.fg },
+  danger: { color: color.onDanger },
   go: { color: color.okInk },
-  link: { color: color.link },
-  dark: { color: color.white },
-  outline: { color: color.okInk },
+  link: { color: color.link, textDecorationLine: 'underline' },
+  outline: { color: color.fg },
 });
+// Status colours: each state of a call has its own (format.ts picks the tone).
 const pill = StyleSheet.create({
-  neutral: { backgroundColor: color.secondary },
-  ok: { backgroundColor: color.ok },
-  bad: { backgroundColor: color.bad },
-  info: { backgroundColor: color.infoBg },
-  alert: { backgroundColor: color.ok },
+  neutral: { backgroundColor: color.pill },
+  ok: { backgroundColor: color.okSoft }, // talking to a person
+  hold: { backgroundColor: color.questionBg }, // on hold
+  info: { backgroundColor: color.infoBg }, // dialing, in the menu, incoming
+  alert: { backgroundColor: color.brand }, // needs you
+  done: { backgroundColor: 'transparent', borderColor: color.okLine }, // goal reached
+  bad: { backgroundColor: color.errBg }, // failed
 });
 const pillText = StyleSheet.create({
-  neutral: { color: color.fg },
-  ok: { color: color.okInk },
-  bad: { color: color.fg },
+  neutral: { color: color.soft },
+  ok: { color: color.okText },
+  hold: { color: color.questionInk },
   info: { color: color.infoInk },
-  alert: { color: color.okInk },
+  alert: { color: color.onAccent },
+  done: { color: color.okText },
+  bad: { color: color.err },
 });
 const note = StyleSheet.create({
-  hint: { backgroundColor: color.card2, borderLeftWidth: border.edge, borderLeftColor: color.brand, borderRadius: radius.s, paddingVertical: space.ml, paddingHorizontal: space.l },
-  warn: { backgroundColor: color.card2, borderLeftWidth: border.edge, borderLeftColor: color.warn, borderRadius: radius.s, paddingVertical: space.ml, paddingHorizontal: space.l },
+  hint: { backgroundColor: color.card2, borderRadius: radius.m, paddingVertical: space.ml, paddingHorizontal: space.l },
+  warn: { backgroundColor: color.questionBg, borderRadius: radius.m, paddingVertical: space.ml, paddingHorizontal: space.l },
   saved: { backgroundColor: color.okSoft, borderWidth: border.thin, borderColor: color.okLine },
-  errsum: { backgroundColor: color.errBg, borderWidth: border.thin, borderColor: color.danger },
-  blocked: { backgroundColor: color.errBg, borderWidth: border.thin, borderColor: color.danger, borderRadius: radius.l, paddingHorizontal: space.l },
+  errsum: { backgroundColor: color.errBg, borderWidth: border.thin, borderColor: color.bad },
+  blocked: { backgroundColor: color.errBg, borderWidth: border.thin, borderColor: color.bad, borderRadius: radius.l, paddingHorizontal: space.l },
 });
 const noteText = StyleSheet.create({
   hint: { color: color.soft },
-  warn: { color: color.soft, fontSize: font.size.m },
-  saved: { color: color.fg },
+  warn: { color: color.questionInk, fontSize: font.size.m },
+  saved: { color: color.okText },
   errsum: { color: color.err },
   blocked: { color: color.blockedInk },
 });

@@ -1,9 +1,9 @@
 // Dev-only mock of the CallEnvoy console API (plan sections 4, 4a, 10a, 22; round 2 A1-A4; round 3 A1-A5b) with sample calls.
-// Not part of the export. Serves client/dist under /callenvoy too, so the real export can be checked.
-//   node dev/mock-api.mjs            -> http://localhost:3020/callenvoy/   (admin: dana@example.com, agent key: dev-key)
-// Users: dana@example.com (admin, sample calls and keys), sam@example.com (new: no name, no calls, no keys),
-// and a disabled user. Any other address can sign up while sign-ups are on (the link is printed here).
-//   GET  /__mock/signin?as=dana|sam     signs this browser in as that user (sets the session cookie) and opens the console
+// Not part of the export. Serves client/dist at / too, so the real export can be checked.
+//   node dev/mock-api.mjs            -> http://localhost:3020/   (admin: dana@example.com, agent key: dev-key)
+// Users: dana@example.com (admin: the server's provider keys, sample calls and agent keys), sam@example.com (new: no
+// name, no calls, no keys, 2 free demo calls), riya@example.com (own Twilio and OpenAI keys), and a disabled user. Any other address can sign up while sign-ups are on (the link is printed here).
+//   GET  /__mock/signin?as=dana|sam|riya     signs this browser in as that user (sets the session cookie) and opens the console
 //   GET  /__mock/last-link              the last emailed sign-in link (also printed on the console)
 //   POST /__mock/mail?ready=0|1         email sign-in configured or not (GET /api/auth/me mail_ready)
 //   POST /__mock/expire                 ends every session (the next request gets 401 session_expired)
@@ -14,6 +14,9 @@
 //   POST /__mock/socket?id=<call>&send=replaced|error|drop   acts on that call's open audio socket
 //   POST /__mock/alert?id=<call>&state=alerting|none&seconds=20   starts or ends an alert (a new alert_until each time)
 //   GET  /__mock/count?id=<call>                           how often GET /api/calls/<id> was asked
+//   POST /__mock/keys?can_save=0|1       key saving on or off (the server has an encryption key or not)
+//   /connect?request=demo                an agent's sign-in request ("Claude Desktop"); request=expired answers 404
+// Provider keys: a Twilio SID that is not AC + 32 hex, a token or key with "bad" in it, or an OpenAI key without sk- is refused.
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
@@ -37,7 +40,12 @@ const VOICES = [
   ['Rohan', 'male', 'Indian English', 'professional, measured'],
   ['Vikram', 'male', 'Indian English', 'calm, steady, middle-aged'],
   ['Meera', 'female', 'Indian English', 'friendly, professional, middle-aged'],
-].map(([name, gender, accent, style]) => ({ name, gender, accent, style, sample_url: `/callenvoy/static/voices/${name.toLowerCase()}.mp3`, default: name === 'Hannah' }));
+].map(([name, gender, accent, style]) => ({ name, gender, accent, style, provider: 'fish', sample_url: `/static/voices/${name.toLowerCase()}.mp3`, default: name === 'Hannah' }));
+// The voices of a user without a Fish Audio key (the sample files here are stand-ins).
+const OPENAI_VOICES = [
+  ['Marin', 'female', 'US', 'warm, natural', 'sarah'], ['Coral', 'female', 'US', 'bright, friendly', 'hannah'], ['Sage', 'female', 'US', 'calm, even', 'laura'],
+  ['Cedar', 'male', 'US', 'warm, steady', 'ethan'], ['Ash', 'male', 'US', 'clear, direct', 'jordan'], ['Onyx', 'male', 'US', 'deep, measured', 'adrian'],
+].map(([name, gender, accent, style, file]) => ({ name, gender, accent, style, provider: 'openai', sample_url: `/static/voices/${file}.mp3`, default: name === 'Marin' }));
 
 const newProfile = (over = {}) => ({
   name: null, callback_number: null, details: null,
@@ -125,7 +133,7 @@ function sampleCalls() {
     base('c_done', { status: 'completed', phase: null, finished: true, created_at: iso(60 * MIN), ended_at: iso(60 * MIN - (RECORDING_SECONDS + 6) * 1000), talk_seconds: RECORDING_SECONDS,
       outcome: { result: 'done', summary: 'Maria in billing moved the account back to the old plan and added a $65 credit, which shows on the next bill.', details: { reference_number: 'NS48213K', credit: '$65.00, next bill' } },
       answered_questions: [{ id: 'q_0', question: 'What is the service address on the account?', answer: '1820 SE Alder St, Apt 4, Portland OR 97214' }],
-      recordings: [{ url: '/callenvoy/r/demo', duration_seconds: RECORDING_SECONDS }],
+      recordings: [{ url: '/r/demo', duration_seconds: RECORDING_SECONDS }],
       transcript: doneLines(60 * MIN) }),
     base('c_handed', { business: 'City Water Billing', number: '+19715550110', status: 'completed', phase: null, finished: true, recorded: false,
       created_at: iso(26 * 60 * MIN), ended_at: iso(26 * 60 * MIN - 756_000), talk_seconds: 756, owner_seconds: 44,
@@ -167,7 +175,22 @@ const ALPHABET = '23456789abcdefghjkmnpqrstuvwxyz'; // no look-alike characters
 const newKey = () => 'ce_live_' + Array.from(crypto.randomBytes(32), (b) => ALPHABET[b % ALPHABET.length]).join('');
 const withPrefix = (k) => ({ ...k, prefix: k.key.slice(0, 12) });
 const DAY = 24 * 60 * MIN;
-const newUser = (id, email, over = {}) => ({ id, email, created_at: iso(0), last_seen_at: iso(0), disabled: false, calls: [], keys: [], profile: newProfile(), verifiedAt: 0, ...over });
+const newUser = (id, email, over = {}) => ({ id, email, created_at: iso(0), last_seen_at: iso(0), disabled: false, calls: [], keys: [], profile: newProfile(), verifiedAt: 0,
+  providers: { twilio: null, openai: null, deepgram: null, fish: null }, demoCalls: 0, ...over });
+// ---- Provider keys: the admin uses the server's; everyone else brings Twilio and OpenAI (Deepgram and Fish are optional) ----
+const DEMO_CALLS = 2; // free demo-line calls of a user without own keys
+const PROVIDERS = ['twilio', 'openai', 'deepgram', 'fish'];
+let canSave = true;
+const isAdmin = (u) => u.email === OWNER_EMAIL;
+const keysReady = (u) => isAdmin(u) || !!(u.providers.twilio && u.providers.openai);
+const hint = (v) => `${v.slice(0, 2)}...${v.slice(-4)}`;
+const keysState = (u) => ({ ready: keysReady(u), server_keys: isAdmin(u), demo_calls_left: Math.max(0, DEMO_CALLS - u.demoCalls), can_save: canSave });
+const hearing = (u) => (isAdmin(u) || u.providers.deepgram ? 'deepgram' : 'openai');
+const voiceProvider = (u) => (isAdmin(u) || u.providers.fish ? 'fish' : 'openai');
+const providersView = (u) => ({ can_save: canSave, ready: keysReady(u), server_keys: isAdmin(u), hearing: hearing(u), voice_provider: voiceProvider(u),
+  inbound_url: `https://callenvoy.pragnyalabs.com/twilio/inbound/${u.id}`,
+  providers: Object.fromEntries(PROVIDERS.map((n) => [n, { saved: !!u.providers[n], hint: u.providers[n]?.hint ?? null, checked_at: u.providers[n]?.checked_at ?? null,
+    ...(n === 'twilio' ? { from_number: u.providers.twilio?.from_number ?? null } : {}) }])) });
 const users = [
   newUser('u_dana', OWNER_EMAIL, {
     created_at: iso(40 * DAY), last_seen_at: iso(2 * MIN), calls: sampleCalls(),
@@ -178,6 +201,10 @@ const users = [
     ].map(withPrefix),
   }),
   newUser('u_sam', 'sam@example.com', { created_at: iso(3 * DAY), last_seen_at: iso(3 * DAY) }),
+  newUser('u_riya', 'riya@example.com', { created_at: iso(5 * DAY), last_seen_at: iso(20 * MIN), profile: newProfile({ name: 'Riya Shah', callback_number: '+14085550164', voice: 'Marin' }),
+    providers: { twilio: { hint: 'AC...91f2', from_number: '+14085550190', checked_at: iso(4 * DAY) }, openai: { hint: 'sk...Zq4A', checked_at: iso(4 * DAY) }, deepgram: null, fish: null },
+    calls: [base('c_r1', { business: 'Lakeside Dental', number: '+14085550111', status: 'completed', phase: null, finished: true, created_at: iso(2 * DAY), ended_at: iso(2 * DAY - 190_000), talk_seconds: 190, calling_number: '+14085550190',
+      goal: 'Move my cleaning from Thursday to any afternoon next week.', outcome: { result: 'done', summary: 'The cleaning is moved to Tuesday at 2:30 PM with the same hygienist.', details: { new_time: 'Tuesday 2:30 PM' } } })] }),
   newUser('u_long', 'alexandra.konstantinopoulou-whitfield@longdomain-example.org', {
     created_at: iso(12 * DAY), last_seen_at: iso(6 * DAY), disabled: true, profile: newProfile({ name: 'Alexandra Konstantinopoulou-Whitfield' }),
     calls: [base('c_l1', { status: 'completed', phase: null, finished: true, created_at: iso(7 * DAY), ended_at: iso(7 * DAY - 400_000), talk_seconds: 400 })],
@@ -194,7 +221,7 @@ const minutes = (calls) => Math.round(calls.reduce((n, c) => n + (c.talk_seconds
 const usage = (u) => ({
   id: u.id, email: u.email, name: u.profile.name, created_at: u.created_at, last_seen_at: u.last_seen_at, disabled: u.disabled,
   is_admin: u.email === OWNER_EMAIL, calls: u.calls.length, minutes: minutes(u.calls), minutes_today: minutes(u.calls.filter((c) => isToday(c.created_at))),
-  live_calls: u.calls.filter((c) => !c.finished).length,
+  live_calls: u.calls.filter((c) => !c.finished).length, own_keys: !!(u.providers.twilio && u.providers.openai),
 });
 
 const send = (res, status, body) => {
@@ -213,7 +240,7 @@ const newSession = (res, u) => {
   const sid = crypto.randomBytes(24).toString('hex');
   sessions.set(sid, u.id);
   u.last_seen_at = iso(0);
-  res.setHeader('set-cookie', `ce_session=${sid}; HttpOnly; SameSite=Strict; Path=/callenvoy; Max-Age=${30 * 86400}`);
+  res.setHeader('set-cookie', `ce_session=${sid}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${30 * 86400}`);
 };
 const sessionUser = (req) => users.find((u) => u.id === sessions.get(cookie(req, 'ce_session'))) ?? null;
 /** { user, kind: 'owner' | 'agent' }, or the 401 code. */
@@ -256,7 +283,7 @@ async function auth(req, res, p) {
     if (mailReady) {
       const t = crypto.randomBytes(24).toString('hex');
       linkTokens.set(t, { email, until: Date.now() + 15 * MIN });
-      lastLink = `http://localhost:${PORT}/callenvoy/signin?token=${t}`;
+      lastLink = `http://localhost:${PORT}/signin?token=${t}`;
       console.log(`sign-in link for ${email}: ${lastLink}`);
     }
     return send(res, 200, { ok: true });
@@ -274,7 +301,7 @@ async function auth(req, res, p) {
   }
   if (p === '/api/auth/sign-out' && req.method === 'POST') {
     sessions.delete(cookie(req, 'ce_session'));
-    res.setHeader('set-cookie', 'ce_session=; HttpOnly; SameSite=Strict; Path=/callenvoy; Max-Age=0');
+    res.setHeader('set-cookie', 'ce_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0');
     return send(res, 200, { ok: true });
   }
   return send(res, 404, { detail: 'Not found' });
@@ -344,6 +371,44 @@ async function keyRoutes(req, res, p, { keys }) {
   return send(res, 404, { detail: 'Not found' });
 }
 
+/** Provider keys (console session only). The server checks a key with its provider before saving; here a short wait and shape rules stand in. */
+async function providerRoutes(req, res, p, u) {
+  const m = req.method;
+  if (p === '/api/providers' && m === 'GET') return send(res, 200, providersView(u));
+  const name = p.split('/')[3];
+  if (!PROVIDERS.includes(name)) return send(res, 404, { detail: 'Not found' });
+  if (m === 'DELETE') { u.providers[name] = null; return send(res, 200, providersView(u)); }
+  if (m !== 'PUT') return send(res, 404, { detail: 'Not found' });
+  if (!canSave) return send(res, 409, { detail: 'Key saving is off on this server.' });
+  const b = await readBody(req);
+  await sleep(1200);
+  if (name === 'twilio') {
+    const sid = String(b.account_sid ?? '').trim(), token = String(b.auth_token ?? '').trim(), d = String(b.from_number ?? '').replace(/\D/g, '');
+    if (!/^AC[0-9a-f]{32}$/i.test(sid)) return send(res, 400, { detail: 'An Account SID starts with AC and has 34 characters.', field: 'account_sid' });
+    if (token.length < 16 || /bad/i.test(token)) return send(res, 400, { detail: 'Twilio did not accept this Account SID and Auth Token. Copy both again from the Twilio console.', field: 'auth_token' });
+    if (d.length < 10 || d.length > 11) return send(res, 400, { detail: 'Enter the Twilio phone number that places the calls, like +14155550123.', field: 'from_number' });
+    if (d.endsWith('0000')) return send(res, 400, { detail: 'This number is not a voice number in that Twilio account.', field: 'from_number' });
+    u.providers.twilio = { hint: hint(sid), from_number: `+1${d.slice(-10)}`, checked_at: iso(0) };
+  } else {
+    const key = String(b.api_key ?? '').trim();
+    const who = { openai: 'OpenAI', deepgram: 'Deepgram', fish: 'Fish Audio' }[name];
+    if (key.length < 12 || /bad/i.test(key) || (name === 'openai' && !key.startsWith('sk-'))) return send(res, 400, { detail: `${who} did not accept this key. Copy it again.`, field: 'api_key' });
+    u.providers[name] = { hint: hint(key), checked_at: iso(0) };
+  }
+  return send(res, 200, providersView(u));
+}
+
+/** An agent's browser sign-in (OAuth): the /connect page reads the request and answers it. */
+async function oauthRoutes(req, res, p, u) {
+  const id = p.split('/')[4];
+  if (id !== 'demo') return send(res, 404, { detail: 'This sign-in request has expired. Start again from your agent.' });
+  if (req.method === 'GET') return send(res, 200, { client_name: 'Claude Desktop', redirect_host: 'claude.ai' });
+  const b = await readBody(req);
+  if (b.approve && !u.keys.some((k) => k.name === 'Claude Desktop (signed in)'))
+    u.keys.push(withPrefix({ id: `k_${crypto.randomBytes(4).toString('hex')}`, name: 'Claude Desktop (signed in)', key: newKey(), created_at: iso(0), last_used_at: null, disabled: false }));
+  return send(res, 200, { redirect_to: `/__mock/oauth-done?approved=${b.approve ? 1 : 0}` });
+}
+
 /** /r/demo with Range support (206, Accept-Ranges, Content-Range), as the server serves the cached mp3. */
 function recording(req, res) {
   if (recordingFails || !RECORDING.length) return send(res, 404, { detail: 'No such recording.' });
@@ -376,16 +441,29 @@ async function api(req, res, p, q) {
   const { user: u, kind: who } = cred;
   const { profile, calls } = u;
   // As the server: keys, push, admin and the audio ticket (it lets its holder hear and speak on a call) need a console session.
-  const ownerOnly = p.startsWith('/api/keys') || p.startsWith('/api/push/') || p.startsWith('/api/admin/') || p.endsWith('/audio-ticket');
+  const ownerOnly = p.startsWith('/api/keys') || p.startsWith('/api/push/') || p.startsWith('/api/admin/') || p.endsWith('/audio-ticket') || p.startsWith('/api/providers') || p.startsWith('/api/oauth/') || p === '/api/account';
   if (who === 'agent' && ownerOnly) return send(res, 403, { error: 'agent keys cannot use this; sign in to the console', code: 'owner_only' });
   const origin = req.headers.origin;
   if (who === 'owner' && req.method !== 'GET' && origin && origin !== `http://localhost:${PORT}`) return send(res, 403, { detail: 'Wrong origin.' });
   if (p.startsWith('/api/keys')) return keyRoutes(req, res, p, u);
   if (p.startsWith('/api/admin/')) return adminRoutes(req, res, p, u);
   const m = req.method;
-  if (p === '/api/config') return send(res, 200, { app_name: 'CallEnvoy', mcp_url: 'https://pragnyalabs.com/callenvoy/mcp', voices: VOICES, demo: DEMO,
-    limits: { max_call_minutes: 120, max_concurrent_calls: 2, daily_minute_cap: DAILY_MINUTE_CAP, // As the server: the service's minutes today (the shared cap), and this user's own.
-      minutes_used_today: users.reduce((n, x) => n + usage(x).minutes_today, 0), my_minutes_today: minutes(calls.filter((c) => isToday(c.created_at))) },
+  if (p.startsWith('/api/providers')) return providerRoutes(req, res, p, u);
+  if (p.startsWith('/api/oauth/request/')) return oauthRoutes(req, res, p, u);
+  if (p === '/api/account' && m === 'DELETE') {
+    const b = await readBody(req);
+    if (isAdmin(u)) return send(res, 400, { detail: 'The admin account cannot be deleted here.' });
+    if (String(b.confirm ?? '').trim().toLowerCase() !== u.email) return send(res, 400, { detail: 'Type your email address to confirm.', field: 'confirm' });
+    await sleep(600);
+    users.splice(users.indexOf(u), 1);
+    for (const [sid, id] of sessions) if (id === u.id) sessions.delete(sid);
+    res.setHeader('set-cookie', 'ce_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0');
+    return send(res, 204);
+  }
+  if (p === '/api/config') return send(res, 200, { app_name: 'CallEnvoy', mcp_url: 'https://callenvoy.pragnyalabs.com/mcp', demo: DEMO,
+    voices: voiceProvider(u) === 'fish' ? VOICES : OPENAI_VOICES, voice_provider: voiceProvider(u), hearing: hearing(u), keys: keysState(u),
+    limits: { max_call_minutes: 120, max_concurrent_calls: 2, daily_minute_cap: DAILY_MINUTE_CAP, // per user; minutes_used_today is the same number, kept for older consoles
+      minutes_used_today: minutes(calls.filter((c) => isToday(c.created_at))), my_minutes_today: minutes(calls.filter((c) => isToday(c.created_at))) },
     defaults: Object.fromEntries(Object.keys(profile).map((k) => [k, null])), // not used by the console
     choices: { caller_id: ['callenvoy', 'own'], mode: ['handle', 'transfer'], reach: ['app', 'phone', 'app_then_phone'], no_answer: ['ai_handles', 'end_politely'] },
     ranges: RANGES, text_limits: TEXT_LIMITS, vapid_public_key: 'BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuBkr3qBUYIHBQFLXYp5Nksh8U' });
@@ -412,6 +490,12 @@ async function api(req, res, p, q) {
   if (p === '/api/calls' && m === 'POST') {
     const b = await readBody(req);
     if (!profile.name) return send(res, 400, { detail: 'Set your name first (Settings, or callenvoy_save_profile): the AI says who it calls for.' });
+    if (!keysReady(u)) { // without own keys: only the demo line, a few times
+      const to = String(b.to ?? '').replace(/\D/g, '');
+      if (!DEMO.number.endsWith(to.slice(-10)) || to.length < 10) return send(res, 403, { detail: 'Real numbers need your own Twilio and OpenAI keys. Add them in Settings, or call the demo line.', field: 'keys', code: 'keys_needed' });
+      if (u.demoCalls >= DEMO_CALLS) return send(res, 429, { detail: 'You have used your free demo calls. Add your own Twilio and OpenAI keys to place more calls.', field: 'keys', code: 'demo_limit' });
+      u.demoCalls += 1;
+    }
     // Shared service limits: the message says nothing about other users.
     if (/limit/i.test(b.goal ?? '')) return send(res, 429, { error: "The service's daily limit of call minutes is reached. Try again tomorrow.", code: 'daily_limit' });
     if (/busy/i.test(b.goal ?? '')) return send(res, 429, { error: 'The service is busy with other calls. Try again in a few minutes.', code: 'service_busy' });
@@ -442,7 +526,7 @@ async function api(req, res, p, q) {
   return send(res, 404, { detail: 'Not found' });
 }
 
-// Minimal WebSocket for /callenvoy/audio/<id>: state messages and a 440 Hz tone as call audio.
+// Minimal WebSocket for /audio/<id>: state messages and a 440 Hz tone as call audio.
 function audioSocket(req, socket) {
   const id = decodeURIComponent(req.url.split('/').pop());
   const c = callById(id);
@@ -490,7 +574,7 @@ function audioSocket(req, socket) {
   socket.on('error', () => clearInterval(timer));
 }
 
-const types = { '.js': 'text/javascript', '.html': 'text/html', '.json': 'application/json', '.ico': 'image/x-icon', '.png': 'image/png', '.css': 'text/css', '.ttf': 'font/ttf' };
+const types = { '.js': 'text/javascript', '.html': 'text/html', '.json': 'application/json', '.ico': 'image/x-icon', '.png': 'image/png', '.css': 'text/css', '.ttf': 'font/ttf', '.woff2': 'font/woff2', '.mp3': 'audio/mpeg', '.txt': 'text/plain', '.svg': 'image/svg+xml' };
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
   if (req.method === 'OPTIONS') return send(res, 204);
@@ -508,7 +592,7 @@ const server = http.createServer(async (req, res) => {
   }
   if (url.pathname === '/__mock/signin') {
     newSession(res, userByEmail(`${url.searchParams.get('as') ?? 'dana'}@example.com`) ?? users[0]);
-    res.writeHead(302, { location: '/callenvoy/' });
+    res.writeHead(302, { location: '/' });
     return res.end();
   }
   if (url.pathname === '/__mock/last-link') return send(res, 200, { url: lastLink });
@@ -525,9 +609,13 @@ const server = http.createServer(async (req, res) => {
     const u = userByEmail(`${url.searchParams.get('as') ?? 'dana'}@example.com`); if (!u) return send(res, 404, {});
     u.calls = url.searchParams.get('set') === 'empty' ? [] : sampleCalls(); return send(res, 200, { calls: u.calls.length });
   }
+  if (url.pathname === '/__mock/keys') { canSave = url.searchParams.get('can_save') !== '0'; return send(res, 200, { can_save: canSave }); }
+  if (url.pathname === '/__mock/oauth-done') {
+    res.writeHead(200, { 'content-type': 'text/html' });
+    return res.end(`<p style="font:16px system-ui;margin:40px">The agent would continue from here (approved=${url.searchParams.get('approved')}). <a href="/agents">Back to the console</a></p>`);
+  }
   if (url.pathname === '/__mock/admin') { adminFails = url.searchParams.get('fail') === '1'; return send(res, 200, { fail: adminFails }); }
-  if (!url.pathname.startsWith('/callenvoy')) return send(res, 404, { detail: 'Not found' });
-  const p = url.pathname.slice('/callenvoy'.length) || '/';
+  const p = url.pathname;
   if (p.startsWith('/api/')) return api(req, res, p, url.searchParams);
   if (p === '/r/demo') return recording(req, res);
   if (p.startsWith('/r/')) return send(res, 404, { detail: 'No such recording.' });
@@ -543,5 +631,5 @@ const server = http.createServer(async (req, res) => {
   res.writeHead(200, { 'content-type': types[path.extname(f)] ?? 'application/octet-stream', 'cache-control': 'no-cache' });
   fs.createReadStream(f).pipe(res);
 });
-server.on('upgrade', (req, socket) => (req.url.startsWith('/callenvoy/audio/') ? audioSocket(req, socket) : socket.destroy()));
-server.listen(PORT, () => console.log(`mock CallEnvoy on http://localhost:${PORT}/callenvoy/  (sign in: ${OWNER_EMAIL} or sam@example.com, or open /__mock/signin?as=sam; agent key: dev-key)`));
+server.on('upgrade', (req, socket) => (req.url.startsWith('/audio/') ? audioSocket(req, socket) : socket.destroy()));
+server.listen(PORT, () => console.log(`mock CallEnvoy on http://localhost:${PORT}/  (sign in: ${OWNER_EMAIL} or sam@example.com, or open /__mock/signin?as=sam; agent key: dev-key)`));

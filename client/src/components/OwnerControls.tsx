@@ -6,7 +6,7 @@ import { api, type Call, type OwnerState } from '../api';
 import { phone } from '../format';
 import { LeaveGuardContext, useCalls, useLatest, useNow, useSettings } from '../hooks';
 import { guardLeave, micPermission, openAudio, watchMicPermission, type AudioLink } from '../platform/audio';
-import { color, countdownHeight, font, radius, space, useWide } from '../theme';
+import { border, color, countdownHeight, font, radius, space, useWide } from '../theme';
 import { secondsLeft } from './AlertBanner';
 import { AudioMeter, Button, Card, MicBlocked, Note, Sheet, T, text } from './ui';
 
@@ -379,14 +379,14 @@ export function OwnerControls({ call, callbackNumber }: { call: Call; callbackNu
 
 const s = StyleSheet.create({
   panel: { gap: space.ml },
-  alerting: { borderColor: color.ok, backgroundColor: color.okSoft },
+  alerting: { borderColor: color.brand, borderWidth: border.outline }, // calm, but the one accent-framed thing on the page
   h2: { marginBottom: 0 },
-  big: { color: color.fg, fontSize: font.size.big, fontWeight: font.weight.heavy },
+  big: { fontFamily: font.display, color: color.fg, fontSize: font.size.h2, fontWeight: font.weight.bold },
   buttons: { gap: space.sm },
   buttonsWide: { flexDirection: 'row', flexWrap: 'wrap' },
   actions: { flexDirection: 'row', flexWrap: 'wrap', gap: space.sm },
   center: { alignSelf: 'center' },
-  countdown: { height: countdownHeight, backgroundColor: color.okLine, borderRadius: radius.pill, overflow: 'hidden' },
-  countdownFill: { height: '100%', backgroundColor: color.ok },
-  countdownText: { marginTop: space.s, color: color.okText },
+  countdown: { height: countdownHeight, backgroundColor: color.line, borderRadius: radius.pill, overflow: 'hidden' },
+  countdownFill: { height: '100%', backgroundColor: color.brand },
+  countdownText: { marginTop: space.s, color: color.soft, fontVariant: ['tabular-nums'] },
 });
