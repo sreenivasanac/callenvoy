@@ -61,7 +61,7 @@ export function setupAlerts(open: (path: string) => void): () => void {
 export async function showNotification(title: string, body: string, callId: string) {
   if (notificationPermission() !== 'granted') return;
   const options = { body, tag: callId, requireInteraction: true, icon: `${BASE}/icon.png`, data: { url: `${BASE}/calls/${callId}` } };
-  const reg = await registration().catch(() => null);
+  const reg = await registration().then((r) => r && navigator.serviceWorker.ready).catch(() => null);
   if (reg) await reg.showNotification(title, options);
   else new Notification(title, options);
 }

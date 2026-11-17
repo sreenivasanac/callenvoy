@@ -262,7 +262,9 @@ async def connect(user_id: str, call_id: str, mode: str = "join", reach: str = "
         if o.link and mode == "join":
             await join(call_id)
             return "the owner took the call over"
-        await _alert(call_id, "handover" if mode == "join" else "listen_in")
+        # A pending hand-over keeps its own fallback timer (_after_alert: ring the phone or tell the AI):
+        # an expiring alert here would replace it, and the hand-over would never end.
+        await _alert(call_id, "handover" if mode == "join" else "listen_in", expire=not o.handover)
         return "alert sent to the console and the user's devices"
     if phone:
         try:

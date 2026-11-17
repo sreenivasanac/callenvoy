@@ -175,8 +175,10 @@ async function openMic(onBlock: (b: Float32Array) => void): Promise<{ stop: () =
   } catch (e) {
     return (e as Error).name === 'NotAllowedError' ? 'denied' : 'error';
   }
+  let ctx: AudioContext | null = null;
   try {
-    const ctx = new AudioContext();
+    ctx = new AudioContext();
+    const live = ctx;
     await ctx.audioWorklet.addModule(`${WEB_BASE}/mic-worklet.js`);
     const node = new AudioWorkletNode(ctx, 'mic-tap');
     const down = makeDownsampler(ctx.sampleRate);
@@ -185,11 +187,12 @@ async function openMic(onBlock: (b: Float32Array) => void): Promise<{ stop: () =
     return {
       stop() {
         stream.getTracks().forEach((t) => t.stop());
-        void ctx.close();
+        void live.close();
       },
     };
   } catch {
     stream.getTracks().forEach((t) => t.stop());
+    void ctx?.close().catch(() => {});
     return 'error';
   }
 }

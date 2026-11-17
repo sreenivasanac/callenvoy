@@ -60,16 +60,23 @@ def voicemail_rule(call: dict, name: str, callback: str | None) -> str:
     return "Voicemail: do not leave a message; call end_call with result voicemail at once."
 
 
+def for_owner(profile: dict, call: dict) -> bool:
+    """False when the call is placed for another person: the owner's saved details then stay out of it."""
+    return not (call.get("on_behalf_of") and profile.get("name")
+                and call["on_behalf_of"].strip() != profile["name"].strip())
+
+
 def profile_details(profile: dict, call: dict) -> str:
     """The calling profile (section 22.4). The owner's own details are used only when the call is for the owner."""
-    if call.get("on_behalf_of") and profile.get("name") and call["on_behalf_of"].strip() != profile["name"].strip():
+    if not for_owner(profile, call):
         return ""
     return "\n".join(f"{label}: {profile[k]}" for k, label in PROFILE_LABELS.items() if profile.get(k))
 
 
 def build_prompt(call: dict, profile: dict) -> str:
     name = owner_name(call, profile)
-    facts = "\n".join(x for x in ((profile.get("details") or "").strip(), (call.get("facts") or "").strip()) if x)
+    saved = (profile.get("details") or "").strip() if for_owner(profile, call) else ""
+    facts = "\n".join(x for x in (saved, (call.get("facts") or "").strip()) if x)
     condition = handover_condition(call)
     # The number a business should call back is the caller ID of this call (section 22.5).
     callback = call.get("from_number") or config.env("TWILIO_FROM_NUMBER") or profile.get("callback_number")

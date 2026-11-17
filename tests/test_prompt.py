@@ -10,7 +10,7 @@ def test_profile_facts_flexibility_and_no_leak():
     assert "Alex Rivera" in p and "Account 4411" in p and "1 Main St" in p and "a credit up to $40" in p
     assert "connect_owner" in p  # only the "insists on speaking" rule
     assert "Hand-over to" not in p
-    assert "Menu tips" not in p.lower().replace("phone menu tips", "")  # no tips given, no tips section
+    assert "# Phone menu tips" not in p  # no tips given, no tips section
     assert "None" not in p
 
 
@@ -41,3 +41,8 @@ def test_profile_fields_only_for_the_owner():
     assert "1990-01-02" in mine and "XZ9" in mine and "Never read the list out" in mine
     other = build_prompt({**BASE, "on_behalf_of": "Sam Lee"}, profile)
     assert "1990-01-02" not in other and "XZ9" not in other
+
+
+def test_saved_details_stay_out_of_a_call_for_someone_else():
+    p = build_prompt({**BASE, "on_behalf_of": "Sam Lee", "facts": "Sam's account 77"}, PROFILE)
+    assert "Account 4411" not in p and "Sam's account 77" in p

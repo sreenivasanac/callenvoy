@@ -58,6 +58,7 @@ const RANGES = { max_minutes: [1, 120], alert_wait_seconds: [5, 120], phone_ring
 const DEMO = { number: '+16562405137', business: 'Northstar Internet', goal: 'Ask billing to remove a wrong charge of 30 dollars on the October bill and get a reference number.',
   facts: 'Service address: 12 Oak Street, Springfield.', menu_tips: 'Billing is option 1.' };
 const DAILY_MINUTE_CAP = 240;
+const graces = new Map(); // call id -> the drop-grace timer (kept off the call object: it is sent as JSON)
 
 const line = (n, sAgo, who, text) => ({ n, t: iso(sAgo * 1000), who, text, at: null });
 // The demo recording: the voice samples (CBR 128 kb/s mp3 frames) one after the other, twice: about 2 minutes.
@@ -434,7 +435,7 @@ async function api(req, res, p, q) {
   switch (cm?.[2]) {
     case 'hang-up': sockets.get(c.id)?.end('ended'); Object.assign(c, { finished: true, status: 'completed', phase: null, ended_at: iso(0), outcome: { result: 'not_done', summary: 'You hung up the call.', details: {} } }); c.owner.state = 'none'; return ok('Hung up.');
     case 'answer': { const b = await readBody(req); const qn = c.open_questions.find((x) => x.id === b.question_id); if (qn) { c.open_questions = c.open_questions.filter((x) => x !== qn); c.answered_questions.push({ ...qn, answer: b.answer }); c.transcript.push(line(c.transcript.length, 0, 'event', 'owner answered')); } return ok('Sent.'); }
-    case 'connect': c.pending = false; c.owner = { ...c.owner, state: 'ringing', via: 'phone', alert_until: null }; // an open browser socket stays open c.transcript.push(line(c.transcript.length, 0, 'event', 'ringing owner')); return ok('Ringing.');
+    case 'connect': c.pending = false; /* an open browser socket stays open */ c.owner = { ...c.owner, state: 'ringing', via: 'phone', alert_until: null }; c.transcript.push(line(c.transcript.length, 0, 'event', 'ringing owner')); return ok('Ringing.');
     case 'hand-back': c.owner = { ...c.owner, state: 'none', via: null }; c.phase = 'talking'; c.transcript.push(line(c.transcript.length, 0, 'event', 'owner handed the call back')); return ok('Handed back.');
     case 'audio-ticket': { const t = crypto.randomBytes(16).toString('hex'); tickets.add(`${c.id}:${t}`); return send(res, 200, { ticket: t, expires_in: 30 }); }
   }
@@ -473,7 +474,7 @@ function audioSocket(req, socket) {
         sockets.get(id)?.end('replaced'); // one browser link per call: the older one is told and closed
         sockets.set(id, link);
         // A reconnect within the grace keeps the call; otherwise the owner starts as a listener.
-        if (c.owner.state === 'on_call' && c.owner.via === 'app') { clearTimeout(c.grace); json({ type: 'state', owner: 'on_call', phase: c.phase }); }
+        if (c.owner.state === 'on_call' && c.owner.via === 'app') { clearTimeout(graces.get(id)); json({ type: 'state', owner: 'on_call', phase: c.phase }); }
         else state('listening');
         timer = setInterval(() => { const pcm = Buffer.alloc(640); for (let k = 0; k < 320; k++, t++) pcm.writeInt16LE(Math.round(Math.sin((2 * Math.PI * 440 * t) / 8000) * 6000 * (0.5 + 0.5 * Math.sin(t / 4000))), k * 2); frame(2, pcm); }, 40);
       } else if (msg.type === 'join') { if (c.owner.state !== 'on_call') state('on_call'); } // join is a no-op when already on the call
@@ -484,7 +485,7 @@ function audioSocket(req, socket) {
     clearInterval(timer);
     if (sockets.get(id) === link) sockets.delete(id);
     // Dropped while on the call: the server waits 5 s (OWNER_DROP_GRACE_SECONDS), then hands back.
-    if (!gone && c?.owner.state === 'on_call' && c.owner.via === 'app') c.grace = setTimeout(() => { c.owner = { ...c.owner, state: 'none', via: null }; c.phase = 'talking'; }, 5000);
+    if (!gone && c?.owner.state === 'on_call' && c.owner.via === 'app') graces.set(id, setTimeout(() => { c.owner = { ...c.owner, state: 'none', via: null }; c.phase = 'talking'; }, 5000));
     else if (!gone && c && sockets.get(id) == null && c.owner.via === 'app') c.owner = { ...c.owner, state: 'none', via: null }; if (mic.n) console.log(`audio ${id}: ${mic.n} mic messages of ${mic.bytes} bytes`); });
   socket.on('error', () => clearInterval(timer));
 }

@@ -310,3 +310,17 @@ def test_key_press_then_no_new_stream_closes_the_call(fresh):
         await asyncio.sleep(0.7)
         assert old.summaries == 1 and cid not in calls.LIVE and store.get_call(cid)["ws_token"] is None
     run(go())
+
+
+def test_hang_up_while_dialing_hangs_up_the_returned_call(monkeypatch, fresh):
+    """A hang-up that lands while Twilio's dial request is pending: the call Twilio then returns is hung up."""
+    from callenvoy import twilio_api
+
+    async def slow_create(**kw):
+        row = store.live_calls()[0]
+        await calls.hang_up(uid(), row["id"])  # the user hangs up before Twilio has answered the request
+        return "CAlate"
+
+    monkeypatch.setattr(twilio_api, "create_call", slow_create)
+    v = place()
+    assert v["status"] == "canceled" and ("CAlate", {"hang_up": True}) in fresh.updated

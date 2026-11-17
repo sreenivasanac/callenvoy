@@ -106,7 +106,11 @@ export function SettingsForm({ config, settings, focus }: { config: Config; sett
     setBusy(true);
     try {
       // An empty string removes a text field (plan section 3, save_profile).
-      const next = await save({ ...f, callback_number: cb ?? '', ...(n as Pick<Settings, 'max_minutes' | 'alert_wait_seconds' | 'phone_ring_seconds'>) });
+      // Only the changed fields go out: an unchanged one may hold a value that an agent saved since this
+      // page loaded, and sending the old value back would undo it.
+      const all = { ...f, callback_number: cb ?? '', ...(n as Pick<Settings, 'max_minutes' | 'alert_wait_seconds' | 'phone_ring_seconds'>) };
+      const changed = Object.fromEntries(Object.entries(all).filter(([k]) => f[k as keyof Form] !== base[k as keyof Form]));
+      const next = await save(changed as Partial<Settings>);
       setBase(toForm(next));
       setF(toForm(next));
       setSaved(true);
@@ -186,7 +190,7 @@ export function SettingsForm({ config, settings, focus }: { config: Config; sett
               />
             </Cell>
           </Row>
-          <CallerIdStatus saved={settings.callback_number} />
+          <CallerIdStatus key={settings.callback_number ?? ''} saved={settings.callback_number} />
           <Row>
             <Cell>{textField('name_pronunciation', 'How to say your name', { help: 'For example: DAH-nuh RAY-ess' })}</Cell>
             <Cell>{textField('assistant_name', 'A first name for the AI', { help: 'Empty: the AI does not give itself a name.' })}</Cell>

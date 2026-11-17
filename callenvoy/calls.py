@@ -303,6 +303,12 @@ async def place_call(user_id: str, inp: PlaceCallInput) -> dict:
         _drop(call_id)
         raise CallError(f"could not dial: {e}", 502) from e
     store.update_call(call_id, twilio_sid=sid)
+    if call_id not in LIVE:  # hung up (or the user was removed) while the dial request was pending
+        try:
+            await twilio_api.update_call(sid, hang_up=True)
+        except Exception as e:  # noqa: BLE001
+            log.warning("hang up of a call canceled while dialing failed for %s: %s", call_id, e)
+        return view(call_row(call_id))
     store.update_call(call_id, if_status="queued", status="dialing")  # a final status may have arrived first
     spawn(call_id, _dial_timeout(call_id))
     return view(store.get_call(call_id))

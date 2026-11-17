@@ -33,6 +33,7 @@ export function OwnerControls({ call, callbackNumber }: { call: Call; callbackNu
   const audio = useRef<AudioLink | null>(null);
   const alive = useRef(true);
   const retries = useRef(RECONNECT_TRIES);
+  const opening = useRef(false); // connect() is running
   const ownerRef = useLatest(owner);
   const alertMax = useRef({ until: null as string | null, max: 0 });
 
@@ -62,6 +63,15 @@ export function OwnerControls({ call, callbackNumber }: { call: Call; callbackNu
 
   /** Opens the audio socket. `thenJoin` takes the call as soon as it is open. */
   const connect = async (thenJoin: boolean): Promise<void> => {
+    if (opening.current) return; // a link is already on its way (Listen, then Join pressed at once)
+    opening.current = true;
+    try {
+      await open(thenJoin);
+    } finally {
+      opening.current = false;
+    }
+  };
+  const open = async (thenJoin: boolean): Promise<void> => {
     setLink('connecting');
     setError(null);
     setMoved(false);
