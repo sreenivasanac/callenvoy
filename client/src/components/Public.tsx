@@ -26,7 +26,7 @@ export function PublicPage({ title, children, onSignIn }: { title: string; child
           {wide ? <BarLink label="GitHub" onPress={() => open(REPO_URL)} /> : null}
         </View>
         {me?.signed_in ? (
-          <Button label="Open the console" size="small" onPress={() => router.push('/')} />
+          <Button label={wide ? 'Open the console' : 'Console'} size="small" onPress={() => router.push('/')} />
         ) : (
           <Button label="Sign in" kind="secondary" size="small" onPress={onSignIn ?? (() => router.push('/?signin=1'))} />
         )}
