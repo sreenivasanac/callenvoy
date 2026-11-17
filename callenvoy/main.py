@@ -22,11 +22,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from loguru import logger as loguru_logger
+from mcp.server.auth.routes import create_auth_routes, create_protected_resource_routes
+from mcp.server.auth.settings import ClientRegistrationOptions, RevocationOptions
 from mcp.server.transport_security import TransportSecuritySettings
-from pydantic import BaseModel, Field, StrictBool, StringConstraints
+from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, StrictBool, StringConstraints, TypeAdapter
 from starlette.requests import HTTPConnection
 
-from . import auth, calls, config, demo_line, guard, keys, mcp_server, owner, owner_audio, push, store, twilio_api
+from . import auth, calls, config, demo_line, guard, keys, mcp_server, oauth, owner, owner_audio, push, store, twilio_api
 
 log = logging.getLogger("callenvoy")
 
@@ -82,10 +84,27 @@ async def lifespan(_app):
 api = FastAPI(title=config.APP_NAME, docs_url=None, redoc_url=None, openapi_url=None)
 api.router.routes.extend(_mcp_app.routes)  # POST /mcp, served by the SDK's ASGI handler
 
+# Agent sign-in in the browser (oauth.py): the SDK's /authorize, /token, /register, /revoke and both metadata
+# documents. A client finds them from the 401 that /mcp answers without a key (AuthMiddleware). Discovery
+# addresses are fixed by the OAuth RFCs at the root of the host, so this needs PUBLIC_BASE_URL without a path.
+# The issuer is compared as an exact string by clients: keep "https://host" without a trailing slash.
+_url = TypeAdapter(AnyHttpUrl, config=ConfigDict(url_preserve_empty_path=True)).validate_python
+_base = _url(config.public_base_url())
+api.router.routes.extend(create_auth_routes(
+    oauth.Provider(), issuer_url=_base,
+    client_registration_options=ClientRegistrationOptions(enabled=True, default_scopes=[oauth.SCOPE]),
+    revocation_options=RevocationOptions(enabled=True)))
+_resource = create_protected_resource_routes(_url(f"{config.public_base_url()}/mcp"), [_base], scopes_supported=[oauth.SCOPE],
+                                             resource_name=config.APP_NAME)
+api.router.routes.extend(_resource)
+# Some clients ask without the /mcp suffix: the same document answers there.
+api.router.routes.append(type(_resource[0])("/.well-known/oauth-protected-resource", endpoint=_resource[0].endpoint,
+                                            methods=["GET", "OPTIONS"]))
+
 
 PUBLIC_API = {"/api/demo-line", "/api/auth/me", "/api/auth/request", "/api/auth/verify", "/api/auth/sign-out"}
 # A console session only, never an agent key (an agent must not read, replace or remove credentials).
-OWNER_ONLY = ("/api/keys", "/api/auth/", "/api/push/", "/api/providers", "/api/account")
+OWNER_ONLY = ("/api/keys", "/api/auth/", "/api/push/", "/api/providers", "/api/account", "/api/oauth/")
 ADMIN_API = "/api/admin/"  # the admin's console session only; everyone else gets 404
 UNSAFE = {"POST", "PUT", "PATCH", "DELETE"}
 
@@ -148,7 +167,12 @@ class AuthMiddleware:
                 if path.startswith(OWNER_ONLY) or path.endswith("/audio-ticket"):
                     raise auth.AuthError("owner_only", "agent keys cannot use this; sign in to the console", 403)
         except auth.AuthError as e:
-            return await JSONResponse({"error": str(e), "code": e.code}, status_code=e.status)(scope, receive, send)
+            # On /mcp a 401 also tells the client where it can sign the user in (RFC 9728), so an agent
+            # without a key opens the browser instead of failing.
+            hint = ({"WWW-Authenticate": f'Bearer resource_metadata="{oauth.resource_metadata_url()}"'}
+                    if e.status == 401 and not path.startswith("/api/") else None)
+            return await JSONResponse({"error": str(e), "code": e.code}, status_code=e.status,
+                                      headers=hint)(scope, receive, send)
         token = auth.CURRENT_USER.set(user)
         try:
             return await self.app({**scope, "ce_user": user}, receive, send)
@@ -409,6 +433,29 @@ async def remove_user(user_id: str) -> None:
     for sid in store.delete_user(user_id):
         if re.fullmatch(r"RE\w{1,64}", sid):
             (config.RECORDINGS_DIR / f"{sid}.mp3").unlink(missing_ok=True)
+
+
+# --- agent sign-in in the browser: the console's consent page (console session only) ---
+
+class Consent(BaseModel):
+    approve: StrictBool
+
+
+@api.get("/api/oauth/request/{request_id}")
+async def oauth_request(_user: Me, request_id: str):
+    info = oauth.pending(request_id)
+    if not info:
+        raise calls.CallError("this sign-in request has expired; start it again from your agent", 404)
+    return info
+
+
+@api.post("/api/oauth/request/{request_id}")
+async def oauth_decide(user: Me, request_id: str, body: Consent):
+    """Approve: the agent gets a key of this user (shown in the key list). Deny: it gets nothing."""
+    to = oauth.decide(request_id, user["id"], body.approve)
+    if not to:
+        raise calls.CallError("this sign-in request has expired; start it again from your agent", 404)
+    return {"redirect_to": to}
 
 
 # --- agent keys (console session only, see AuthMiddleware) ---

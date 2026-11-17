@@ -62,6 +62,7 @@ CREATE TABLE IF NOT EXISTS api_keys (
 CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL, expires_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS signin_tokens (token_hash TEXT PRIMARY KEY, email TEXT NOT NULL, expires_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS service (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS oauth_clients (client_id TEXT PRIMARY KEY, info TEXT NOT NULL, created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS provider_keys (
   user_id TEXT NOT NULL, provider TEXT NOT NULL, secret TEXT NOT NULL, hint TEXT NOT NULL, checked_at TEXT NOT NULL,
   PRIMARY KEY (user_id, provider)
@@ -461,6 +462,21 @@ def key_used(key_id: str) -> None:
     """Sets last_used_at unless it was written less than KEY_USE_WRITE_SECONDS ago (ISO strings sort by time)."""
     _q("UPDATE api_keys SET last_used_at = ? WHERE id = ? AND (last_used_at IS NULL OR last_used_at <= ?)",
        (now(), key_id, now(-config.KEY_USE_WRITE_SECONDS)))
+
+
+# --- OAuth clients (MCP clients that registered themselves for a browser sign-in; JSON as the SDK gives it) ---
+
+def oauth_client(client_id: str) -> str | None:
+    r = _q("SELECT info FROM oauth_clients WHERE client_id = ?", (client_id,)).fetchone()
+    return r[0] if r else None
+
+
+def save_oauth_client(client_id: str, info: str) -> None:
+    """Anyone can register a client, so the table is capped: over the cap the oldest ones go (such a client
+    registers again at its next sign-in; keys it already got keep working)."""
+    _q("INSERT OR REPLACE INTO oauth_clients (client_id, info, created_at) VALUES (?, ?, ?)", (client_id, info, now()))
+    _q("DELETE FROM oauth_clients WHERE client_id NOT IN (SELECT client_id FROM oauth_clients "
+       "ORDER BY created_at DESC, rowid DESC LIMIT ?)", (config.OAUTH_MAX_CLIENTS,))
 
 
 # --- console sessions and one-time sign-in tokens (hashes only) ---

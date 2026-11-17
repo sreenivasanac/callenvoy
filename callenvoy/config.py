@@ -152,6 +152,11 @@ SIGNIN_LIMIT_GLOBAL = (60, 86400)
 EMAIL_MAX = 254
 SIGNUPS_OPEN_DEFAULT = True  # the admin's "New sign-ups" switch (stored in the database once changed)
 USER_SEEN_WRITE_SECONDS = 60  # users.last_seen_at is written at most this often
+# Agent sign-in in the browser (oauth.py)
+OAUTH_REQUEST_SECONDS = 600  # the user has this long to sign in and approve
+OAUTH_CODE_SECONDS = 300  # the client has this long to fetch its token after the approval
+OAUTH_MAX_PENDING = 500  # unfinished sign-ins kept in memory
+OAUTH_MAX_CLIENTS = 2000  # registered clients kept in the database
 SMTP_PORT = 587  # STARTTLS
 SMTP_TIMEOUT_SECONDS = 20
 
