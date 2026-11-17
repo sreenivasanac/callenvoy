@@ -6,8 +6,6 @@ sincerely asked, calls FOR the person and never claims to be them, short turns, 
 screeners and voicemail. Passages adapted from Call4me are marked "Call4me" below.
 """
 
-from . import config
-
 TRANSFER_CONDITION = "as soon as a live person picks up"
 PROFILE_LABELS = {
     "name": "Full name", "email": "Email", "address": "Address", "date_of_birth": "Date of birth",
@@ -79,7 +77,7 @@ def build_prompt(call: dict, profile: dict) -> str:
     facts = "\n".join(x for x in (saved, (call.get("facts") or "").strip()) if x)
     condition = handover_condition(call)
     # The number a business should call back is the caller ID of this call (section 22.5).
-    callback = call.get("from_number") or config.env("TWILIO_FROM_NUMBER") or profile.get("callback_number")
+    callback = call.get("from_number") or profile.get("callback_number")
     me = (profile.get("assistant_name") or "").strip()
     say_name = (f" Pronounce {name} like this: {profile['name_pronunciation']}." if profile.get("name_pronunciation") else "")
 

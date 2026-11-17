@@ -18,7 +18,7 @@ from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.frame_processor import FrameDirection
 from pipecat.tests.utils import run_test
 
-from callenvoy import bot, calls, store
+from callenvoy import bot, calls, keys, store
 
 from .conftest import CALL, run, uid
 
@@ -104,7 +104,7 @@ def make_bot(monkeypatch):
     def make(call_id):
         ws = MagicMock()
         ws.headers = {}
-        return bot.CallBot(ws, "MZ1", "CA1", "prompt", "voice", call_id=call_id)
+        return bot.CallBot(ws, "MZ1", "CA1", "prompt", keys.server(), voice="Hannah", call_id=call_id)
     return make
 
 
@@ -167,3 +167,24 @@ def test_resume_messages_closes_open_tool_calls():
     out = bot.resume_messages(msgs)
     assert [m.get("content") for m in out if m["role"] == "tool"] == ["done", "done"]
     assert out[-1] == {"role": "tool", "tool_call_id": "b", "content": "done"} and msgs[2]["content"] == "IN_PROGRESS"
+
+
+def test_voice_and_hearing_follow_the_keys():
+    """Without a Deepgram or Fish key a call hears and speaks through OpenAI; a saved key switches that part."""
+    from dataclasses import replace
+
+    from pipecat.services.deepgram.stt import DeepgramSTTService
+    from pipecat.services.fish.tts import FishAudioTTSService
+    from pipecat.services.openai.stt import OpenAIRealtimeSTTService
+    from pipecat.services.openai.tts import OpenAITTSService
+
+    full = keys.server()  # the test server has all four keys
+    assert isinstance(bot.hearing(full), DeepgramSTTService) and isinstance(bot.speech(full, "Rohan"), FishAudioTTSService)
+    two = replace(full, deepgram="", fish="")  # a user with Twilio + OpenAI only
+    assert two.hearing == "openai" and two.voice_provider == "openai"
+    assert isinstance(bot.hearing(two), OpenAIRealtimeSTTService)
+    assert isinstance(bot.hearing(two, own_vad=False), OpenAIRealtimeSTTService)
+    tts = bot.speech(two, "Rohan")  # a Fish voice name on an account without Fish: the OpenAI default
+    assert isinstance(tts, OpenAITTSService) and tts._settings.voice == "marin"
+    assert bot.speech(two, "Cedar")._settings.voice == "cedar"
+    assert isinstance(bot.speech(replace(two, fish="f"), "Cedar"), FishAudioTTSService)

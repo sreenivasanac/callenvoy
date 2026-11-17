@@ -15,7 +15,7 @@ from typing import Protocol
 
 from pipecat.audio.utils import mix_audio
 
-from . import calls, config, guard, prompt, push, store, twilio_api
+from . import calls, config, guard, keys, prompt, push, store, twilio_api
 
 log = logging.getLogger("callenvoy.owner")
 _sleep = asyncio.sleep  # tests swap this for a fast clock
@@ -145,14 +145,15 @@ async def _expire_alert(call_id: str, seconds: int) -> None:
 
 async def _ring(call_id: str, mode: str, phone: str | None = None) -> bool:
     """Rings the phone of the call's user (a second Twilio call). False when there is no number to ring."""
-    profile = calls.get_profile(calls.call_row(call_id)["user_id"])
+    row = calls.call_row(call_id)
+    profile = calls.get_profile(row["user_id"])
     number = phone or profile["callback_number"]
-    if not number:
+    if not number or not keys.may_ring(row):  # a free demo call on the server's keys rings no phone
         return False
     o = get(call_id)
     try:
         sid = await twilio_api.create_call(
-            to=number, url=calls.url(f"/twilio/owner/{call_id}"),
+            keys.for_call(row), to=number, url=calls.url(f"/twilio/owner/{call_id}"),
             status_callback=calls.url(f"/twilio/status/{call_id}?leg=owner"),
             ring_seconds=profile["phone_ring_seconds"], time_limit=config.MAX_CALL_MINUTES * 60)
     except Exception as e:  # noqa: BLE001
@@ -197,7 +198,7 @@ async def _hang_up_phone(call_id: str) -> None:
     if row and row["owner_twilio_sid"]:
         store.update_call(call_id, owner_twilio_sid=None)
         try:
-            await twilio_api.update_call(row["owner_twilio_sid"], hang_up=True)
+            await twilio_api.update_call(keys.for_call(row), row["owner_twilio_sid"], hang_up=True)
         except Exception as e:  # noqa: BLE001
             log.warning("owner leg hang up failed for %s: %s", call_id, e)
 
@@ -252,10 +253,13 @@ async def listen_in(call_id: str) -> None:
 async def connect(user_id: str, call_id: str, mode: str = "join", reach: str = "phone", phone: str | None = None) -> str:
     """connect_me / the console's connect route: bring the owner to the call now.
     reach "phone" always rings the phone, also while a browser link is open (the phone link then replaces it)."""
-    _live(user_id, call_id)
+    row = _live(user_id, call_id)
     o = get(call_id)
     if mode not in ("join", "listen") or reach not in ("phone", "app"):
         raise calls.CallError('mode must be "join" or "listen"; reach must be "phone" or "app"', field="mode")
+    if reach == "phone" and not keys.may_ring(row):
+        raise calls.CallError("a free demo call cannot ring a phone; join it in the console instead (reach \"app\")",
+                              field="reach")
     if o.state == "on_call":
         return "the owner already has the call"
     if reach == "app":

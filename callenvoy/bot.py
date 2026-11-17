@@ -46,6 +46,8 @@ from pipecat.serializers.twilio import TwilioFrameSerializer
 from pipecat.services.deepgram.stt import DeepgramSTTService
 from pipecat.services.fish.tts import FishAudioTTSService
 from pipecat.services.openai.llm import OpenAILLMService
+from pipecat.services.openai.stt import OpenAIRealtimeSTTService
+from pipecat.services.openai.tts import OpenAITTSService
 from pipecat.transports.websocket.fastapi import FastAPIWebsocketParams, FastAPIWebsocketTransport
 from pipecat.workers.runner import WorkerRunner
 
@@ -169,6 +171,29 @@ TOOLS = {
 OWNER_HAS_CALL = "The person you call for has the call now. Do nothing and stay silent until you are told it is handed back."
 
 
+def hearing(creds, own_vad: bool = True):
+    """Speech-to-text for one pipeline: Deepgram when the account has a key for it, else OpenAI (streaming).
+    `own_vad` False: the pipeline has no voice-activity detector (the owner's side line), so OpenAI must find
+    the ends of speech itself, which needs its turn-detecting model."""
+    if creds.deepgram:
+        return DeepgramSTTService(api_key=creds.deepgram, settings=DeepgramSTTService.Settings(model=config.STT_MODEL))
+    if own_vad:
+        return OpenAIRealtimeSTTService(api_key=creds.openai)
+    return OpenAIRealtimeSTTService(api_key=creds.openai, turn_detection={"type": "server_vad"},
+                                    settings=OpenAIRealtimeSTTService.Settings(model=config.OPENAI_VAD_STT_MODEL))
+
+
+def speech(creds, voice_name: str | None, voice_id: str | None = None):
+    """Text-to-speech: Fish Audio when the account has a key for it, else OpenAI. `voice_id` (a Fish reference
+    id) is for the demo rep; a call names its voice, and gets the provider's default when that provider lacks it."""
+    if creds.fish:
+        return FishAudioTTSService(api_key=creds.fish, settings=FishAudioTTSService.Settings(
+            model=config.TTS_MODEL, voice=voice_id or config.voice(voice_name, "fish")["reference_id"]))
+    return OpenAITTSService(api_key=creds.openai, sample_rate=config.OPENAI_TTS_RATE, settings=OpenAITTSService.Settings(
+        model=config.OPENAI_TTS_MODEL, voice=config.voice(voice_name, "openai")["reference_id"],
+        instructions=config.OPENAI_TTS_STYLE))
+
+
 def save_outcome(call_id: str, result, summary, details=None) -> None:
     store.update_call(call_id, outcome_result=result if result in config.OUTCOMES else "not_done",
                       outcome_summary=str(summary or "")[:1000], outcome_details=json.dumps(details or {}))
@@ -190,11 +215,14 @@ def resume_messages(messages: list) -> list:
 
 
 class CallBot:
-    """One pipeline for one phone leg. With call_id None it is the demo rep (no call row, only end_call)."""
+    """One pipeline for one phone leg, on the accounts in `creds` (keys.Creds). With call_id None it is the
+    demo rep (no call row, only end_call)."""
 
-    def __init__(self, websocket, stream_sid: str, twilio_call_sid: str, system_prompt: str, voice_id: str,
+    def __init__(self, websocket, stream_sid: str, twilio_call_sid: str, system_prompt: str, creds,
+                 voice: str | None = None, voice_id: str | None = None,
                  call_id: str | None = None, messages: list | None = None):
         self.call_id = call_id
+        self.creds = creds
         self.moved = False  # a key press moved the call to a new stream: this bot ends without a summary
         self.twilio_call_sid = twilio_call_sid
         self.owner_name = "the account holder"
@@ -204,18 +232,16 @@ class CallBot:
         self.owner_stt: PipelineWorker | None = None
         self.owner_runner: asyncio.Task | None = None
         serializer = TwilioFrameSerializer(
-            stream_sid, twilio_call_sid, config.env("TWILIO_ACCOUNT_SID"), config.env("TWILIO_AUTH_TOKEN"),
+            stream_sid, twilio_call_sid, creds.twilio_sid, creds.twilio_token,
             params=TwilioFrameSerializer.InputParams(auto_hang_up=False))
         # allowed_origins=[]: Twilio sends no Origin; the one-use ws_token already guards this socket.
         self.transport = FastAPIWebsocketTransport(websocket, FastAPIWebsocketParams(
             audio_in_enabled=True, audio_out_enabled=True, add_wav_header=False, serializer=serializer,
             allowed_origins=[]))
-        stt = DeepgramSTTService(api_key=config.env("DEEPGRAM_API_KEY"),
-                                 settings=DeepgramSTTService.Settings(model=config.STT_MODEL))
-        self.llm = OpenAILLMService(api_key=config.env("OPENAI_API_KEY"), settings=OpenAILLMService.Settings(
+        stt = hearing(creds)
+        self.llm = OpenAILLMService(api_key=creds.openai, settings=OpenAILLMService.Settings(
             model=config.LLM_MODEL, temperature=config.LLM_TEMPERATURE))
-        tts = FishAudioTTSService(api_key=config.env("FISH_API_KEY"), settings=FishAudioTTSService.Settings(
-            model=config.TTS_MODEL, voice=voice_id))
+        tts = speech(creds, voice, voice_id)
         names = list(TOOLS) if call_id else ["end_call"]
         self.context = LLMContext(messages=messages or [{"role": "system", "content": system_prompt}],
                                   tools=ToolsSchema(standard_tools=[TOOLS[n] for n in names]))
@@ -286,7 +312,7 @@ class CallBot:
         await asyncio.sleep(seconds)
         log.warning("call %s reached its hard limit of %s s", self.twilio_call_sid, seconds)
         try:
-            await twilio_api.update_call(self.twilio_call_sid, hang_up=True)
+            await twilio_api.update_call(self.creds, self.twilio_call_sid, hang_up=True)
         except Exception as e:  # noqa: BLE001
             log.warning("hang up at the hard limit failed: %s", e)
         await self.stop()
@@ -360,9 +386,7 @@ class CallBot:
             await self.tell(f"{self.owner_name} said to them: {text}", run_llm=False)
 
         self.owner_stt = PipelineWorker(
-            Pipeline([DeepgramSTTService(api_key=config.env("DEEPGRAM_API_KEY"),
-                                         settings=DeepgramSTTService.Settings(model=config.STT_MODEL)),
-                      LineSink(on_text)]),
+            Pipeline([hearing(self.creds, own_vad=False), LineSink(on_text)]),
             params=PipelineParams(audio_in_sample_rate=rate), idle_timeout_secs=None, enable_rtvi=False)
         self.owner_runner = asyncio.create_task(WorkerRunner(handle_sigint=False).run(self.owner_stt))
 
@@ -386,7 +410,7 @@ class CallBot:
             save_outcome(self.call_id, "no_human", "Nobody spoke on the call.")
             return
         try:
-            r = await AsyncOpenAI(api_key=config.env("OPENAI_API_KEY")).chat.completions.create(
+            r = await AsyncOpenAI(api_key=self.creds.openai).chat.completions.create(
                 model=config.SUMMARY_MODEL, temperature=0, response_format={"type": "json_object"},
                 messages=[{"role": "system", "content":
                            f"Phone call goal: {row['goal']}\nReturn JSON: {{\"result\": one of "
@@ -494,7 +518,7 @@ class CallBot:
             if self.call_id:
                 await calls.stop_call(calls.call_row(self.call_id))
             else:
-                await twilio_api.update_call(self.twilio_call_sid, hang_up=True)
+                await twilio_api.update_call(self.creds, self.twilio_call_sid, hang_up=True)
         except Exception as e:  # noqa: BLE001
             log.warning("hang up after end_call failed: %s", e)
         await self.stop()

@@ -39,7 +39,7 @@ CREATE TABLE IF NOT EXISTS calls (
   talk_seconds INTEGER, error TEXT,
   recording_sid TEXT, recording_seconds INTEGER, recording_token TEXT,
   direction TEXT NOT NULL DEFAULT 'outbound', from_number TEXT, leave_voicemail INTEGER NOT NULL DEFAULT 1,
-  user_id TEXT
+  user_id TEXT, own_keys INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS calls_user ON calls (user_id, created_at);
 CREATE TABLE IF NOT EXISTS lines (
@@ -62,9 +62,14 @@ CREATE TABLE IF NOT EXISTS api_keys (
 CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL, expires_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS signin_tokens (token_hash TEXT PRIMARY KEY, email TEXT NOT NULL, expires_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS service (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS provider_keys (
+  user_id TEXT NOT NULL, provider TEXT NOT NULL, secret TEXT NOT NULL, hint TEXT NOT NULL, checked_at TEXT NOT NULL,
+  PRIMARY KEY (user_id, provider)
+);
 """
 # Columns added after the first release: (table, column, type). open_db adds them to an existing database.
-MIGRATIONS = [("lines", "at", "REAL")]
+# own_keys: the call ran on the user's own provider keys (0: the server's; every call before user keys).
+MIGRATIONS = [("lines", "at", "REAL"), ("calls", "own_keys", "INTEGER NOT NULL DEFAULT 0")]
 
 db: sqlite3.Connection | None = None
 # Set by calls.py: called with the call id after every write that changes a call (long-poll wake-up).
@@ -125,9 +130,6 @@ def _migrate_to_users() -> None:
             _q("ALTER TABLE profile RENAME TO profile_round2")
             _q(PROFILE_TABLE)
             _q("INSERT INTO profile (user_id, key, value) SELECT ?, key, value FROM profile_round2", (uid,))
-            # The admin verified this number before verification was per user: it stays theirs.
-            _q("INSERT INTO profile (user_id, key, value) SELECT ?, ?, value FROM profile_round2 "
-               "WHERE key = 'callback_number'", (uid, config.CALLER_ID_CLAIM))
             _q("DROP TABLE profile_round2")
         _q("DROP TABLE IF EXISTS sessions")
         _q("DROP TABLE IF EXISTS signin_tokens")
@@ -206,7 +208,7 @@ def delete_user(user_id: str) -> list[str]:
         mine = "SELECT id FROM calls WHERE user_id = ?"
         _q(f"DELETE FROM lines WHERE call_id IN ({mine})", (user_id,))
         _q(f"DELETE FROM questions WHERE call_id IN ({mine})", (user_id,))
-        for t in ("calls", "profile", "api_keys", "sessions", "push_subscriptions"):
+        for t in ("calls", "profile", "api_keys", "sessions", "push_subscriptions", "provider_keys"):
             _q(f"DELETE FROM {t} WHERE user_id = ?", (user_id,))
         _q("DELETE FROM signin_tokens WHERE email = ?", (email,))
         _q("DELETE FROM users WHERE id = ?", (user_id,))
@@ -291,12 +293,10 @@ def user_live_calls(user_id: str) -> list[dict]:
     return _rows(f"SELECT * FROM calls WHERE user_id = ? AND status IN ({marks})", (user_id, *config.LIVE_STATUSES))
 
 
-def last_call_to(number: str, since: str, user_id: str | None = None) -> dict | None:
-    """The newest outbound call to `number` since `since` (of one user, or of anyone for callback routing)."""
-    # Routing counts only calls that were answered: a call that never connected must not capture callbacks.
-    mine = " AND user_id = ?" if user_id else " AND answered_at IS NOT NULL"
-    return _row("SELECT user_id, business FROM calls WHERE direction = 'outbound' AND to_number = ? AND created_at >= ?"
-                f"{mine} ORDER BY created_at DESC, rowid DESC LIMIT 1", (number, since, *([user_id] if user_id else [])))
+def last_call_to(number: str, since: str, user_id: str) -> dict | None:
+    """The user's newest outbound call to `number` since `since` (names a callback from that number)."""
+    return _row("SELECT user_id, business FROM calls WHERE direction = 'outbound' AND to_number = ? AND created_at >= ? "
+                "AND user_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1", (number, since, user_id))
 
 
 def talk_seconds_today(user_id: str | None = None) -> int:
@@ -304,6 +304,18 @@ def talk_seconds_today(user_id: str | None = None) -> int:
     mine = " AND user_id = ?" if user_id else ""
     return _q(f"SELECT COALESCE(SUM(talk_seconds), 0) FROM calls WHERE created_at >= ? AND direction = 'outbound'{mine}",
               (now()[:10], *([user_id] if user_id else []))).fetchone()[0]
+
+
+def demo_calls(user_id: str) -> int:
+    """How many calls this user placed to the demo line (the free ones on the server's keys)."""
+    return _q("SELECT COUNT(*) FROM calls WHERE user_id = ? AND direction = 'outbound' AND to_number = ?",
+              (user_id, config.DEMO_LINE_NUMBER)).fetchone()[0]
+
+
+def server_key_seconds_today(except_user: str | None) -> int:
+    """Talk seconds today of calls on the server's keys, without the admin's (the shared demo budget)."""
+    return _q("SELECT COALESCE(SUM(talk_seconds), 0) FROM calls WHERE created_at >= ? AND direction = 'outbound' "
+              "AND own_keys = 0 AND user_id IS NOT ?", (now()[:10], except_user)).fetchone()[0]
 
 
 # --- transcript lines ---
@@ -372,20 +384,24 @@ def profile_names() -> dict[str, str]:
     return {r[0]: json.loads(r[1]) for r in _q("SELECT user_id, value FROM profile WHERE key = 'name'")}
 
 
-def caller_id_claim_busy(user_id: str, number: str) -> bool:
-    """True while another user's verification of this number may still be going on. Without this, user B could
-    take the claim during user A's verification call, and A's code entry would then verify the number for B."""
-    since = json.dumps(now(-config.CALLER_ID_CLAIM_SECONDS))
-    return _q("SELECT 1 FROM profile c JOIN profile t ON t.user_id = c.user_id AND t.key = ? "
-              "WHERE c.key = ? AND c.value = ? AND c.user_id != ? AND t.value > ?",
-              (config.CALLER_ID_CLAIM_AT, config.CALLER_ID_CLAIM, json.dumps(number), user_id, since)).fetchone() is not None
+# --- provider keys (encrypted by keys.py; this module only stores the text) ---
+
+def provider_keys(user_id: str) -> list[dict]:
+    return _rows("SELECT * FROM provider_keys WHERE user_id = ?", (user_id,))
 
 
-def claim_caller_id(user_id: str, number: str) -> None:
-    """The user who starts a verification of a number holds it alone: an old unfinished claim of another user
-    ends, so that it cannot become valid when the number's real owner verifies it later."""
-    _q("DELETE FROM profile WHERE key = ? AND value = ?", (config.CALLER_ID_CLAIM, json.dumps(number)))
-    save_profile(user_id, {config.CALLER_ID_CLAIM: number, config.CALLER_ID_CLAIM_AT: now()})
+def save_provider_key(user_id: str, provider: str, secret: str, hint: str) -> None:
+    _q("INSERT INTO provider_keys (user_id, provider, secret, hint, checked_at) VALUES (?, ?, ?, ?, ?) "
+       "ON CONFLICT(user_id, provider) DO UPDATE SET secret = excluded.secret, hint = excluded.hint, "
+       "checked_at = excluded.checked_at", (user_id, provider, secret, hint, now()))
+
+
+def delete_provider_key(user_id: str, provider: str) -> None:
+    _q("DELETE FROM provider_keys WHERE user_id = ? AND provider = ?", (user_id, provider))
+
+
+def users_with_provider(provider: str) -> set[str]:
+    return {r[0] for r in _q("SELECT user_id FROM provider_keys WHERE provider = ?", (provider,))}
 
 
 # --- push subscriptions ---

@@ -1,7 +1,8 @@
 """FastAPI app: auth middleware, console API, Twilio webhooks and sockets, MCP endpoint, the web export.
 
 Run: uv run uvicorn callenvoy.main:app --host 127.0.0.1 --port 3020 --no-access-log  (one worker only:
-live call state is in memory). Everything lives under BASE_PATH (/callenvoy), which nginx passes through.
+live call state is in memory). Everything lives under config.BASE_PATH (the path part of PUBLIC_BASE_URL,
+empty at the root of a host), which nginx passes through.
 """
 
 import asyncio
@@ -25,7 +26,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import BaseModel, Field, StrictBool, StringConstraints
 from starlette.requests import HTTPConnection
 
-from . import auth, calls, config, demo_line, guard, mcp_server, owner, owner_audio, push, store, twilio_api
+from . import auth, calls, config, demo_line, guard, keys, mcp_server, owner, owner_audio, push, store, twilio_api
 
 log = logging.getLogger("callenvoy")
 
@@ -58,7 +59,7 @@ def quiet_logs() -> None:
 
 # --- MCP (stateless, plain JSON). transport_security is required: the SDK otherwise only accepts Host: localhost. ---
 
-_public_host = urlparse(config.PUBLIC_ORIGIN).hostname or "pragnyalabs.com"
+_public_host = urlparse(config.PUBLIC_ORIGIN).netloc
 _hosts = [_public_host, "localhost:*", "127.0.0.1:*"]  # the service listens on 127.0.0.1 only; nginx sets Host
 _origins = [config.PUBLIC_ORIGIN] + ([config.DEV_ORIGIN] if config.dev_mode() else [])
 _mcp_app = mcp_server.server.streamable_http_app(
@@ -83,7 +84,8 @@ api.router.routes.extend(_mcp_app.routes)  # POST /mcp, served by the SDK's ASGI
 
 
 PUBLIC_API = {"/api/demo-line", "/api/auth/me", "/api/auth/request", "/api/auth/verify", "/api/auth/sign-out"}
-OWNER_ONLY = ("/api/keys", "/api/auth/", "/api/push/")  # a console session only, never an agent key
+# A console session only, never an agent key (an agent must not read, replace or remove credentials).
+OWNER_ONLY = ("/api/keys", "/api/auth/", "/api/push/", "/api/providers", "/api/account")
 ADMIN_API = "/api/admin/"  # the admin's console session only; everyone else gets 404
 UNSAFE = {"POST", "PUT", "PATCH", "DELETE"}
 
@@ -167,6 +169,8 @@ async def _call_error(_req, e: calls.CallError):
     body = {"detail": str(e)}
     if e.field:
         body["field"] = e.field
+    if e.code:
+        body["code"] = e.code
     return JSONResponse(body, status_code=e.status)
 
 
@@ -207,14 +211,17 @@ async def healthz():
 
 @api.get("/api/config")
 async def get_config(user: Me):
+    k, mine = keys.view(user), calls.minutes_used_today(user["id"])
     return {
         "app_name": config.APP_NAME,
         "mcp_url": config.public_base_url() + "/mcp",
-        "voices": mcp_server.voices(),
-        # minutes_used_today: the service's minutes (all users: the shared daily cap); my_minutes_today: this user's
-        "limits": {"max_call_minutes": config.MAX_CALL_MINUTES, "max_concurrent_calls": config.MAX_CONCURRENT_CALLS,
-                   "daily_minute_cap": config.DAILY_MINUTE_CAP, "minutes_used_today": calls.minutes_used_today(),
-                   "my_minutes_today": calls.minutes_used_today(user["id"])},
+        "voices": mcp_server.voices(k["voice_provider"]),  # the ones this user's calls can use
+        "voice_provider": k["voice_provider"], "hearing": k["hearing"],
+        "keys": {"ready": k["ready"], "server_keys": k["server_keys"], "can_save": k["can_save"],
+                 "demo_calls_left": calls.demo_calls_left(user)},
+        # Limits are per user. minutes_used_today is the same number as my_minutes_today (older consoles read it).
+        "limits": {"max_call_minutes": config.MAX_CALL_MINUTES, "max_concurrent_calls": config.MAX_USER_CALLS,
+                   "daily_minute_cap": config.DAILY_MINUTE_CAP, "minutes_used_today": mine, "my_minutes_today": mine},
         "defaults": config.SETTING_DEFAULTS,
         "choices": {k: s["choices"] for k, s in config.SETTINGS.items() if s["type"] == "choice"},
         "ranges": {k: [s["min"], s["max"]] for k, s in config.SETTINGS.items() if s["type"] == "int"},
@@ -345,6 +352,65 @@ async def push_test(user: Me):
     return {"sent": await push.send(user["id"], push.payload({"business": ""}, "test", False))}
 
 
+# --- provider keys: the user's own Twilio / OpenAI / Deepgram / Fish accounts (console session only) ---
+
+@api.get("/api/providers")
+async def providers(user: Me):
+    return keys.view(user)
+
+
+@api.put("/api/providers/{provider}")
+async def save_provider(user: Me, provider: str, request: Request):
+    """Checks the key with the provider, then stores it encrypted. The key is never sent back."""
+    try:
+        body = await request.json()
+    except ValueError:
+        body = None
+    try:
+        await keys.save(user["id"], provider, body)
+    except keys.KeyError_ as e:
+        raise calls.CallError(str(e), field=e.field) from e
+    calls.forget_caller_id()  # the Twilio account may have changed
+    return keys.view(user)
+
+
+@api.delete("/api/providers/{provider}")
+async def delete_provider(user: Me, provider: str):
+    """Removing a required key ends the user's live calls on their own keys first (they could not be hung up after)."""
+    if provider not in config.PROVIDERS:
+        raise calls.CallError("unknown provider", 404)
+    if provider in config.REQUIRED_PROVIDERS:
+        await calls.stop_user_calls(user["id"], own_keys_only=True)
+    store.delete_provider_key(user["id"], provider)
+    calls.forget_caller_id()
+    return keys.view(user)
+
+
+class DeleteAccount(BaseModel):
+    confirm: str = Field(min_length=1, max_length=config.EMAIL_MAX + 20)
+
+
+@api.delete("/api/account", status_code=204)
+async def delete_account(user: Me, body: DeleteAccount):
+    """The user deletes their own account and all its data. `confirm` is their email address, typed again."""
+    if auth.is_admin(user):
+        raise calls.CallError("the admin account cannot be deleted here; change OWNER_EMAIL on the server first", 409)
+    if body.confirm.strip().lower() != user["email"]:
+        raise calls.CallError("type your email address to confirm", field="confirm")
+    await remove_user(user["id"])
+    r = Response(status_code=204)
+    r.delete_cookie(config.SESSION_COOKIE, path=config.BASE_PATH or "/", secure=True, httponly=True, samesite="strict")
+    return r
+
+
+async def remove_user(user_id: str) -> None:
+    """Hangs up the user's live calls, then deletes the user, all their data and their cached recordings."""
+    await calls.stop_user_calls(user_id, drop=True)
+    for sid in store.delete_user(user_id):
+        if re.fullmatch(r"RE\w{1,64}", sid):
+            (config.RECORDINGS_DIR / f"{sid}.mp3").unlink(missing_ok=True)
+
+
 # --- agent keys (console session only, see AuthMiddleware) ---
 
 KeyName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=config.KEY_NAME_MAX)]
@@ -463,7 +529,7 @@ async def auth_verify(body: SignInToken):
     store.user_seen(user["id"])
     r = JSONResponse({"ok": True, "email": user["email"]})
     r.set_cookie(config.SESSION_COOKIE, auth.new_session(user["id"]), max_age=config.SESSION_DAYS * 86400,
-                 path=config.BASE_PATH, secure=True, httponly=True, samesite="strict")
+                 path=config.BASE_PATH or "/", secure=True, httponly=True, samesite="strict")
     return r
 
 
@@ -471,7 +537,7 @@ async def auth_verify(body: SignInToken):
 async def auth_sign_out(request: Request):
     auth.end_session(request.cookies.get(config.SESSION_COOKIE))
     r = JSONResponse({"ok": True})
-    r.delete_cookie(config.SESSION_COOKIE, path=config.BASE_PATH, secure=True, httponly=True, samesite="strict")
+    r.delete_cookie(config.SESSION_COOKIE, path=config.BASE_PATH or "/", secure=True, httponly=True, samesite="strict")
     return r
 
 
@@ -489,7 +555,7 @@ def _user_view(user: dict, usage: dict, names: dict) -> dict:
     numbers = usage.get(user["id"], {"calls": 0, "minutes": 0, "minutes_today": 0, "live_calls": 0})
     return {"id": user["id"], "email": user["email"], "name": names.get(user["id"]), "created_at": user["created_at"],
             "last_seen_at": user["last_seen_at"], "disabled": bool(user["disabled"]), "is_admin": auth.is_admin(user),
-            **numbers}
+            "own_keys": keys.own(user["id"]) is not None, **numbers}
 
 
 def _other_user(me: dict, user_id: str) -> dict:
@@ -521,10 +587,7 @@ async def admin_change_user(who: Admin, user_id: str, body: UserChange):
 async def admin_remove_user(who: Admin, user_id: str):
     """Hangs up the user's live calls, then deletes the user, all their data and their cached recordings."""
     _other_user(who, user_id)
-    await calls.stop_user_calls(user_id, drop=True)
-    for sid in store.delete_user(user_id):
-        if re.fullmatch(r"RE\w{1,64}", sid):
-            (config.RECORDINGS_DIR / f"{sid}.mp3").unlink(missing_ok=True)
+    await remove_user(user_id)
     return Response(status_code=204)
 
 
@@ -539,8 +602,9 @@ async def admin_settings(_me: Admin, body: ServiceSettings):
 _fetching: dict[str, asyncio.Lock] = {}
 
 
-async def recording_file(sid: str):
+async def recording_file(row: dict):
     """The recording mp3 on disk, fetched from Twilio on first use (a .part file until complete)."""
+    sid = row["recording_sid"]
     path = config.RECORDINGS_DIR / f"{sid}.mp3"
     async with _fetching.setdefault(sid, asyncio.Lock()):
         if not path.is_file():
@@ -549,7 +613,7 @@ async def recording_file(sid: str):
             part = path.with_suffix(".part")
             try:
                 with open(os.open(part, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "wb") as f:
-                    async for chunk in twilio_api.fetch_recording(sid):
+                    async for chunk in twilio_api.fetch_recording(keys.for_call(row), sid):
                         f.write(chunk)
                 if not part.stat().st_size:  # never keep an empty file: the next request must try again
                     raise twilio_api.TwilioError("empty recording")
@@ -567,7 +631,7 @@ async def recording(token: str, download: bool = False):
     if not row or not row["recording_sid"] or not re.fullmatch(r"RE\w{1,64}", row["recording_sid"]):
         return JSONResponse({"detail": "not found"}, status_code=404)
     try:
-        path = await recording_file(row["recording_sid"])
+        path = await recording_file(row)
     except (twilio_api.TwilioError, OSError, httpx.HTTPError) as e:
         log.warning("recording fetch failed: %s", type(e).__name__)
         return JSONResponse({"detail": "recording not available"}, status_code=502)
@@ -581,13 +645,22 @@ def xml(body: str) -> Response:
     return Response(twilio_api.twiml(body), media_type="text/xml")
 
 
-async def twilio_form(request: Request) -> dict | None:
-    """The form fields when the X-Twilio-Signature matches PUBLIC_BASE_URL + path + query, else None."""
+async def twilio_form(request: Request, creds=None) -> dict | None:
+    """The form fields when the X-Twilio-Signature matches PUBLIC_BASE_URL + path + query, else None.
+    The signature is made with the auth token of the Twilio account that sends the webhook: `creds` of the
+    call's user, or the server's own."""
     form = {k: str(v) for k, v in (await request.form()).items()}
     root = request.scope.get("root_path", "")
     path = request.url.path[len(root):] if request.url.path.startswith(root) else request.url.path
     url = config.public_base_url() + path + (f"?{request.url.query}" if request.url.query else "")
-    return form if guard.twilio_ok(url, form, request.headers.get("x-twilio-signature")) else None
+    token = (creds or keys.server()).twilio_token
+    return form if guard.twilio_ok(url, form, request.headers.get("x-twilio-signature"), token) else None
+
+
+async def call_form(request: Request, call_id: str) -> tuple[dict | None, dict | None]:
+    """(form, call row) of a webhook about one call, checked with the token of the account the call runs on."""
+    row = store.get_call(call_id)
+    return await twilio_form(request, keys.for_call(row) if row else None), row
 
 
 FORBIDDEN = Response("forbidden", status_code=403)
@@ -595,9 +668,9 @@ FORBIDDEN = Response("forbidden", status_code=403)
 
 @api.post("/twilio/voice/{call_id}")
 async def twilio_voice(call_id: str, request: Request):
-    if await twilio_form(request) is None:
+    form, row = await call_form(request, call_id)
+    if form is None:
         return FORBIDDEN
-    row = store.get_call(call_id)
     if not row or row["status"] not in ("dialing", "in_progress") or not row["ws_token"]:
         return xml("<Hangup/>")
     return xml(demo_line.stream(f"/twilio/media/{row['ws_token']}"))
@@ -605,7 +678,7 @@ async def twilio_voice(call_id: str, request: Request):
 
 @api.post("/twilio/status/{call_id}")
 async def twilio_status(call_id: str, request: Request, leg: str = "business"):
-    form = await twilio_form(request)
+    form, _row = await call_form(request, call_id)
     if form is None:
         return FORBIDDEN
     await calls.on_status(call_id, form, "owner" if leg == "owner" else "business")
@@ -615,10 +688,9 @@ async def twilio_status(call_id: str, request: Request, leg: str = "business"):
 @api.post("/twilio/owner/{call_id}")
 async def twilio_owner(call_id: str, request: Request):
     """The owner's phone leg: "Press 1 to join" (a key press stops a voicemail being put on the call)."""
-    form = await twilio_form(request)
+    form, row = await call_form(request, call_id)
     if form is None:
         return FORBIDDEN
-    row = store.get_call(call_id)
     o = owner.OWNERS.get(call_id)
     if not row or row["status"] != "in_progress" or not o:
         return xml("<Hangup/>")
@@ -648,21 +720,31 @@ def inbound_twiml(fwd: dict | None, caller_id: str | None = None) -> str:
 
 @api.post("/twilio/inbound")
 async def twilio_inbound(request: Request):
+    """A call to the server's own number."""
     form = await twilio_form(request)
     if form is None:
         return FORBIDDEN
     return Response(inbound_twiml(calls.inbound(form)), media_type="text/xml")
 
 
+@api.post("/twilio/inbound/{user_id}")
+async def twilio_inbound_own(user_id: str, request: Request):
+    """A call to a user's own Twilio number (they set this address as the number's voice webhook)."""
+    creds = keys.own(user_id)
+    form = await twilio_form(request, creds) if creds else None
+    if form is None:
+        return FORBIDDEN
+    return Response(inbound_twiml(calls.inbound(form, user_id)), media_type="text/xml")
+
+
 @api.post("/twilio/inbound-done/{call_id}")
 async def twilio_inbound_done(call_id: str, request: Request, retry: str | None = None):
     """End of the forward. If Twilio refused the caller's number as caller ID, try once more with ours
     (whether Twilio reports that case as DialCallStatus=failed is not verified)."""
-    form = await twilio_form(request)
+    form, row = await call_form(request, call_id)
     if form is None:
         return FORBIDDEN
-    row = store.get_call(call_id)
-    own = config.env("TWILIO_FROM_NUMBER")
+    own = keys.for_call(row).from_number if row else ""
     if form.get("DialCallStatus") == "failed" and not retry and own and row and row["direction"] == "inbound":
         return Response(inbound_twiml({"id": call_id, "caller": row["to_number"], "forward_to": row["from_number"]},
                                       caller_id=own), media_type="text/xml")
@@ -676,7 +758,7 @@ async def demo(request: Request, step: str | None = None, try_: str | None = Que
     form = await twilio_form(request)
     if form is None:
         return FORBIDDEN
-    own = config.env("TWILIO_FROM_NUMBER")
+    own = keys.server().from_number
     if not own or form.get("From") != own:
         return xml("<Hangup/>")
     return Response(demo_line.twiml(step, try_ == "1"), media_type="text/xml")
@@ -704,7 +786,8 @@ async def twilio_media(ws: WebSocket, token: str):
     except ValueError:
         return
     if demo_rep:
-        rep = bot.CallBot(ws, data["stream_id"], data["call_id"], demo_line.rep_prompt(), config.DEMO_REP_VOICE_ID)
+        rep = bot.CallBot(ws, data["stream_id"], data["call_id"], demo_line.rep_prompt(), keys.server(),
+                          voice_id=config.DEMO_REP_VOICE_ID)
         await rep.run(speak_first=True, max_seconds=config.DEMO_REP_MAX_SECONDS)
         return
     call_id = row["id"]
@@ -712,7 +795,7 @@ async def twilio_media(ws: WebSocket, token: str):
     before = live.moved_from if live else None  # set when a key press moved the call to this new stream
     profile = calls.get_profile(row["user_id"])  # the call's user: name, details, callback number
     the_bot = bot.CallBot(ws, data["stream_id"], data["call_id"], prompt.build_prompt(row, profile),
-                          config.voice(row["voice"])["reference_id"], call_id=call_id,
+                          keys.for_call(row), voice=row["voice"], call_id=call_id,
                           messages=bot.resume_messages(before.context.get_messages()) if before else None)
     try:
         await calls.stream_started(call_id, the_bot)
@@ -757,12 +840,11 @@ async def web(path: str):
 
 
 app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+if config.BASE_PATH:  # hosted under a path: the bare host root sends people there
+    @app.get("/")
+    async def to_base():
+        return Response(status_code=307, headers={"Location": config.BASE_PATH + "/"})
 app.mount(config.BASE_PATH, api)
-
-
-@app.get("/")
-async def to_base():
-    return Response(status_code=307, headers={"Location": config.BASE_PATH + "/"})
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")

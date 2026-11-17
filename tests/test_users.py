@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 
 from callenvoy import auth, calls, config, main, owner, push, store
 
-from .conftest import CALL, KEY, owner_cookie, place, run, uid
+from .conftest import CALL, KEY, USER_NUMBER, USER_SID, USER_TOKEN, give_keys, owner_cookie, place, run, uid
 
 ORIGIN = {"Origin": config.PUBLIC_ORIGIN}
 API = "/callenvoy/api"
@@ -20,10 +20,13 @@ def client():
     return TestClient(main.app, base_url="http://localhost:3020")  # no lifespan: the MCP manager runs once per process
 
 
-def new_user(email="bo@example.com", name="Bo") -> str:
+def new_user(email="bo@example.com", name="Bo", own_keys=True) -> str:
+    """A second user; by default with their own provider keys, so they can call real numbers."""
     u = store.add_user(email)["id"]
     if name:
         store.save_profile(u, {"name": name})
+    if own_keys:
+        give_keys(u)
     return u
 
 
@@ -91,7 +94,6 @@ def test_round2_database_is_migrated_once_to_the_admin(tmp_path):
     assert store.user_call(a, "c_old")["business"] == "Northstar" and store.lines("c_old")[0]["at"] == 1.5
     assert store.questions("c_old")[0]["answer"] == "October"
     assert calls.get_profile(a)["voice"] == "Rohan" and calls.get_profile(a)["name"] == "Alex"
-    assert store.get_profile(a)[config.CALLER_ID_CLAIM] == "+14155550199"  # the admin's verified number stays usable
     assert [k["id"] for k in store.keys(a)] == ["k_old"] and store.key_by_hash("HASH")["user_id"] == a
     assert [d["label"] for d in store.push_devices(a)] == ["phone"]
     assert store.db.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0  # sign in again
@@ -184,38 +186,26 @@ def test_agent_key_acts_only_for_its_user(client):
     assert [c["id"] for c in client.get(f"{API}/calls", headers=bearer(KEY)).json()] == [cid]
 
 
-def test_caller_id_verified_by_another_user_is_not_usable(fresh):
-    a, b = uid(), new_user()
-    for u in (a, b):
+def test_caller_id_is_checked_in_the_users_own_twilio_account(fresh, monkeypatch):
+    """Each account's verified numbers are its own: nothing verified by one user is usable by another."""
+    a, b, c = uid(), new_user(), new_user("cy@example.com", "Cy", own_keys=False)
+    for u in (a, b, c):
         store.save_profile(u, {"callback_number": "+14155550199"})
-    run(calls.verify_number(b))  # B starts it but cannot type the code (not B's phone)
-    with pytest.raises(calls.CallError, match="in progress") as busy:  # B's verification call may still be going on
-        run(calls.verify_number(a))
-    assert busy.value.status == 409 and fresh.validations == ["+14155550199"]  # A's phone did not ring again
-    store.save_profile(b, {config.CALLER_ID_CLAIM_AT: store.now(-config.CALLER_ID_CLAIM_SECONDS - 1)})
-    run(calls.verify_number(a))  # B's unfinished claim is old: A takes the number
-    fresh.verified.add("+14155550199")
-    assert run(calls.caller_id(a))["verified"] is True and run(calls.caller_id(b))["verified"] is False
-    with pytest.raises(calls.CallError, match="cannot be verified") as e:
-        run(calls.verify_number(b))
-    assert e.value.status == 409 and fresh.validations == ["+14155550199"] * 2
-    with pytest.raises(calls.CallError, match="verif"):
-        place(b, **{"from": "own"})
-    with pytest.raises(calls.CallError, match="unknown setting"):  # the claim is not a setting anyone can save
-        calls.save_profile(b, {config.CALLER_ID_CLAIM: "+14155550199"})
-    assert not {config.CALLER_ID_CLAIM, config.CALLER_ID_CLAIM_AT} & set(calls.get_profile(a))
+    asked = []
 
+    async def verified(creds, number):
+        asked.append(creds.twilio_sid)
+        return creds.twilio_sid == USER_SID  # verified in B's account only
 
-def test_caller_id_cannot_be_taken_during_the_owners_verification(fresh):
-    """A starts, B starts for the same number while A's phone rings, A types the code: B must not get A's number."""
-    a, b = uid(), new_user()
-    for u in (a, b):
-        store.save_profile(u, {"callback_number": "+14155550199"})
-    run(calls.verify_number(a))
-    with pytest.raises(calls.CallError, match="in progress"):
-        run(calls.verify_number(b))
-    fresh.verified.add("+14155550199")  # A typed the code
-    assert run(calls.caller_id(a))["verified"] is True and run(calls.caller_id(b))["verified"] is False
+    from callenvoy import twilio_api
+    monkeypatch.setattr(twilio_api, "caller_id_verified", verified)
+    assert run(calls.caller_id(b))["verified"] is True and run(calls.caller_id(a))["verified"] is False
+    assert asked == [USER_SID, "ACtest"]
+    assert run(calls.caller_id(c))["verified"] is False and len(asked) == 2  # no keys: no account to ask
+    with pytest.raises(calls.CallError) as e:
+        run(calls.verify_number(c))
+    assert e.value.code == "keys_needed" and fresh.validations == []
+    assert place(b, **{"from": "own"})["calling_number"] == "+14155550199"
 
 
 def test_alerts_and_prompt_use_the_calls_user(monkeypatch, fresh):
@@ -306,7 +296,7 @@ def test_admin_list_is_usage_only(client):
     users = client.get(f"{API}/admin/users", headers=owner_cookie()).json()
     assert users["signups_open"] is True
     me, bo = users["users"]
-    assert set(bo) == {"id", "email", "name", "created_at", "last_seen_at", "disabled", "is_admin", "calls",
+    assert set(bo) == {"id", "email", "name", "created_at", "last_seen_at", "disabled", "is_admin", "own_keys", "calls",
                        "minutes", "minutes_today", "live_calls"}
     assert (bo["email"], bo["name"], bo["calls"], bo["minutes"], bo["minutes_today"], bo["live_calls"]) == \
         ("bo@example.com", "Bo", 2, 2, 2, 1)
@@ -425,18 +415,159 @@ def test_signin_rate_limits(client, monkeypatch):
 
 # --- shared limits, config, demo line ---
 
-def test_limits_are_shared_and_config_shows_own_minutes(client):
-    b = new_user()
+def test_limits_are_per_user_and_the_server_has_a_ceiling(client, fresh):
+    b, c = new_user(), new_user("cy@example.com", "Cy")
     v = place()
     store.update_call(v["id"], status="completed", talk_seconds=600)
     place()
     place()
-    with pytest.raises(calls.CallError, match="service is busy") as e:
-        place(b)
+    with pytest.raises(calls.CallError, match="already have 2 calls") as e:  # the admin's own limit
+        place()
     assert e.value.status == 429
+    place(b)
+    place(b)  # B is not held back by the admin's calls
+    with pytest.raises(calls.CallError, match="service is busy") as e:  # 4 calls: the server's ceiling
+        place(c)
+    assert e.value.status == 429 and "running" not in str(e.value)  # nothing about other users' calls
     cfg = client.get(f"{API}/config", headers=owner_cookie(b)).json()
-    assert cfg["limits"]["minutes_used_today"] == 10 and cfg["limits"]["my_minutes_today"] == 0
+    assert cfg["limits"]["my_minutes_today"] == 0 and cfg["limits"]["minutes_used_today"] == 0
+    assert client.get(f"{API}/config", headers=owner_cookie()).json()["limits"]["my_minutes_today"] == 10
     assert cfg["demo"] == config.DEMO_CALL and cfg["demo"]["number"] == "+16562405137"
+
+
+def test_a_call_cannot_outlast_the_days_budget(fresh):
+    """A call that starts just under the daily cap gets only the rest of the budget as its hard time limit."""
+    v = place()
+    store.update_call(v["id"], status="completed", talk_seconds=(config.DAILY_MINUTE_CAP - 5) * 60)
+    place()
+    assert fresh.created[-1]["time_limit"] == 5 * 60
+    for r in store.live_calls():
+        store.update_call(r["id"], status="completed", talk_seconds=5 * 60)
+    with pytest.raises(calls.CallError, match="your daily limit"):
+        place()
+
+
+# --- own keys and the free demo call ---
+
+def test_real_calls_need_own_keys_and_run_on_the_users_account(client, fresh):
+    b = new_user(own_keys=False)
+    with pytest.raises(calls.CallError) as e:
+        place(b)
+    assert e.value.code == "keys_needed" and e.value.status == 403 and fresh.created == []
+    r = client.post(f"{API}/calls", json=CALL, headers=owner_cookie(b))
+    assert r.status_code == 403 and r.json()["code"] == "keys_needed" and r.json()["field"] == "keys"
+    cfg = client.get(f"{API}/config", headers=owner_cookie(b)).json()
+    assert cfg["keys"] == {"ready": False, "server_keys": False, "can_save": True, "demo_calls_left": 3}
+    give_keys(b)
+    v = place(b)
+    row = store.get_call(v["id"])
+    assert row["own_keys"] == 1 and fresh.accounts[-1] == USER_SID and v["calling_number"] == USER_NUMBER
+    place()  # the admin: the server's account
+    assert fresh.accounts[-1] == "ACtest" and store.live_calls()[-1]["own_keys"] == 0
+    run(calls.hang_up(b, v["id"]))
+    assert fresh.updated[-1][0] == row["twilio_sid"]
+
+
+def test_free_demo_calls_are_few_short_and_ring_no_phone(fresh):
+    b = new_user(own_keys=False)
+    store.save_profile(b, {"callback_number": "+14155550177", "reach": "phone", "max_minutes": 60})
+    v = place(b, to=config.DEMO_LINE_NUMBER, mode="transfer")
+    row = store.get_call(v["id"])
+    assert fresh.accounts[-1] == "ACtest" and row["own_keys"] == 0  # the server's account
+    assert row["reach"] == "app" and row["max_minutes"] == config.DEMO_MAX_MINUTES
+    store.update_call(v["id"], status="in_progress")
+    with pytest.raises(calls.CallError, match="cannot ring a phone"):
+        run(owner.connect(b, v["id"], "join", "phone", "+14155550123"))
+    assert len(fresh.created) == 1  # nobody's phone rang on the server's account
+    store.update_call(v["id"], status="completed", talk_seconds=60)
+    for _ in range(config.DEMO_CALLS_PER_USER - 1):
+        store.update_call(place(b, to=config.DEMO_LINE_NUMBER)["id"], status="completed", talk_seconds=60)
+    with pytest.raises(calls.CallError) as e:
+        place(b, to=config.DEMO_LINE_NUMBER)
+    assert e.value.code == "demo_limit" and e.value.status == 429
+    assert calls.demo_calls_left(store.get_user(b)) == 0
+    # the shared demo budget of the day: other guests are refused once it is used up
+    store.update_call(v["id"], talk_seconds=config.DEMO_DAILY_MINUTE_CAP * 60)
+    with pytest.raises(calls.CallError, match="free demo calls are used up"):
+        place(new_user("cy@example.com", "Cy", own_keys=False), to=config.DEMO_LINE_NUMBER)
+    place(to=config.DEMO_LINE_NUMBER)  # the admin is not a guest
+
+
+def test_webhooks_are_checked_with_the_token_of_the_calls_account(client, fresh):
+    from callenvoy import guard
+    b = new_user()
+    cid = place(b)["id"]
+    url = f"{config.public_base_url()}/twilio/status/{cid}"
+    form = {"CallStatus": "in-progress"}
+
+    def post(token):
+        return client.post(f"/callenvoy/twilio/status/{cid}", data=form,
+                           headers={"X-Twilio-Signature": guard.twilio_signature(url, form, token)})
+    assert post("test-token").status_code == 403  # the server's token does not sign B's webhooks
+    assert post(USER_TOKEN).status_code == 204 and store.get_call(cid)["status"] == "in_progress"
+
+
+def test_provider_keys_are_checked_saved_encrypted_and_never_sent_back(client, fresh, monkeypatch):
+    b = new_user(own_keys=False)
+    cb = {**owner_cookie(b), **ORIGIN}
+    seen = []
+
+    async def fake_get(url, **kw):
+        import httpx
+        seen.append(url)
+        if "openai" in url:
+            return httpx.Response(200 if kw["headers"]["Authorization"] == "Bearer sk-good-key-0123456789" else 401, json={})
+        if url.endswith("IncomingPhoneNumbers.json"):
+            return httpx.Response(200, json={"incoming_phone_numbers": [{"sid": "PN1"}] if kw["params"]["PhoneNumber"] == USER_NUMBER else []})
+        return httpx.Response(200 if kw["auth"] == (USER_SID, USER_TOKEN) else 401, json={"status": "active", "type": "Trial"})
+
+    from callenvoy import keys
+    monkeypatch.setattr(keys, "_get", fake_get)
+    v = client.get(f"{API}/providers", headers=cb).json()
+    assert v["ready"] is False and v["can_save"] is True and v["providers"]["twilio"]["saved"] is False
+    assert v["inbound_url"].endswith(f"/twilio/inbound/{b}")
+    twilio = {"account_sid": USER_SID, "auth_token": USER_TOKEN, "from_number": "(510) 555-0100"}
+    r = client.put(f"{API}/providers/twilio", json={**twilio, "auth_token": "wrongtoken" * 3}, headers=cb)
+    assert r.status_code == 400 and r.json()["field"] == "auth_token"
+    r = client.put(f"{API}/providers/twilio", json={**twilio, "from_number": "+15105550111"}, headers=cb)
+    assert r.status_code == 400 and r.json()["field"] == "from_number"
+    r = client.put(f"{API}/providers/twilio", json=twilio, headers=cb)
+    t = r.json()["providers"]["twilio"]
+    assert r.status_code == 200 and t["saved"] and t["from_number"] == USER_NUMBER and "trial" in t["note"]
+    assert r.json()["ready"] is False  # OpenAI is still missing
+    assert client.put(f"{API}/providers/openai", json={"api_key": "sk-bad-key-0123456789"}, headers=cb).status_code == 400
+    v = client.put(f"{API}/providers/openai", json={"api_key": "sk-good-key-0123456789"}, headers=cb).json()
+    assert v["ready"] is True and v["voice_provider"] == "openai" and v["hearing"] == "openai"
+    assert USER_TOKEN not in json.dumps(v) and "sk-good" not in json.dumps(v)
+    raw = " ".join(r["secret"] for r in store.provider_keys(b))
+    assert USER_TOKEN not in raw and "sk-good" not in raw  # encrypted at rest
+    assert keys.own(b).twilio_token == USER_TOKEN and place(b)["calling_number"] == USER_NUMBER
+    # an agent key cannot read, save or remove provider keys
+    _, agent = auth.create_key(b, "Codex")
+    for method, path in (("GET", "/providers"), ("PUT", "/providers/openai"), ("DELETE", "/providers/openai")):
+        assert client.request(method, API + path, json={"api_key": "x" * 20}, headers=bearer(agent)).status_code == 403
+    # removing a required key hangs up the live call on it, and real calls need keys again
+    v = client.delete(f"{API}/providers/openai", headers=cb).json()
+    assert v["ready"] is False and fresh.updated and keys.own(b) is None
+    # without the secret nothing can be saved
+    monkeypatch.delenv("CALLENVOY_SECRET_KEY")
+    r = client.put(f"{API}/providers/openai", json={"api_key": "sk-good-key-0123456789"}, headers=cb)
+    assert r.status_code == 400 and "off" in r.json()["detail"]
+    assert client.get(f"{API}/providers", headers=cb).json()["can_save"] is False
+
+
+def test_a_user_can_delete_their_own_account(client, fresh):
+    b = new_user()
+    cid = place(b)["id"]
+    cb = {**owner_cookie(b), **ORIGIN}
+    assert client.request("DELETE", f"{API}/account", json={"confirm": "wrong@example.com"}, headers=cb).status_code == 400
+    assert client.request("DELETE", f"{API}/account", json={"confirm": " Bo@Example.com "}, headers=cb).status_code == 204
+    assert store.get_user(b) is None and store.get_call(cid) is None and store.provider_keys(b) == []
+    assert fresh.updated  # the live call was hung up
+    assert client.get(f"{API}/profile", headers=cb).status_code == 401
+    admin = {**owner_cookie(), **ORIGIN}
+    r = client.request("DELETE", f"{API}/account", json={"confirm": "me@example.com"}, headers=admin)
+    assert r.status_code == 409 and store.get_user(uid())
 
 
 def test_demo_line_always_uses_the_callenvoy_number(fresh):
@@ -447,46 +578,48 @@ def test_demo_line_always_uses_the_callenvoy_number(fresh):
 
 # --- inbound callback routing ---
 
-def test_inbound_goes_to_the_last_caller_else_the_admin():
+def test_inbound_goes_to_the_owner_of_the_number():
+    """The server's number is the admin's; a user's own Twilio number is theirs."""
     a, b = uid(), new_user()
     store.save_profile(a, {"callback_number": "+14155550199"})
     store.save_profile(b, {"callback_number": "+14155550177"})
     place(business="Admin's dentist")
     place(b, business="Bo's bank")
-    for r in store.live_calls():
-        store.update_call(r["id"], status="completed", answered_at=store.now())
-    c = new_user("cy@example.com", "Cy")
-    store.save_profile(c, {"callback_number": "+14155550166"})
-    place(c, business="Never answered")  # newest call to the number, but it never connected: it does not count
-    for r in store.live_calls():
-        store.update_call(r["id"], status="canceled")
 
-    fwd = calls.inbound({"From": "+14155550123", "CallSid": "CA1"})
-    row = store.get_call(fwd["id"])
-    assert fwd["forward_to"] == "+14155550177" and row["user_id"] == b and row["business"] == "Bo's bank"
-
-    store.set_user_disabled(b, True)  # disabled: the admin gets it, named after the admin's own call
-    fwd = calls.inbound({"From": "+14155550123", "CallSid": "CA2"})
+    fwd = calls.inbound({"From": "+14155550123", "CallSid": "CA1"})  # to the server's number
     row = store.get_call(fwd["id"])
     assert fwd["forward_to"] == "+14155550199" and row["user_id"] == a and row["business"] == "Admin's dentist"
+    fwd = calls.inbound({"From": "+14155550123", "CallSid": "CA2"}, b)  # to B's own number
+    row = store.get_call(fwd["id"])
+    assert fwd["forward_to"] == "+14155550177" and row["user_id"] == b and row["business"] == "Bo's bank"
+    assert row["own_keys"] == 1
+    fwd = calls.inbound({"From": "+14155550100", "CallSid": "CA3"})  # a number nobody called
+    assert store.get_call(fwd["id"])["business"] == "Incoming call"
 
-    fwd = calls.inbound({"From": "+14155550100", "CallSid": "CA3"})  # nobody called it: the admin
-    assert fwd["forward_to"] == "+14155550199" and store.get_call(fwd["id"])["business"] == "Incoming call"
-
-    store.set_user_disabled(b, False)
-    store.save_profile(b, {"callback_number": None})  # B has no callback number: the admin, without B's name
-    fwd = calls.inbound({"From": "+14155550123", "CallSid": "CA4"})
-    assert fwd["forward_to"] == "+14155550199" and store.get_call(fwd["id"])["business"] == "Admin's dentist"
-
+    store.set_user_disabled(b, True)
+    assert calls.inbound({"From": "+14155550123", "CallSid": "CA4"}, b) is None  # never the admin instead
     store.save_profile(a, {"callback_number": None})
     assert calls.inbound({"From": "+14155550100", "CallSid": "CA5"}) is None  # nobody to forward to
+
+
+def test_inbound_webhook_of_an_own_number_needs_that_accounts_signature(client):
+    from callenvoy import guard
+    b = new_user()
+    store.save_profile(b, {"callback_number": "+14155550177"})
+    url = f"{config.public_base_url()}/twilio/inbound/{b}"
+    form = {"From": "+14155550123", "CallSid": "CA9"}
+    sign = lambda token: {"X-Twilio-Signature": guard.twilio_signature(url, form, token)}  # noqa: E731
+    assert client.post(f"/callenvoy/twilio/inbound/{b}", data=form, headers=sign("test-token")).status_code == 403
+    r = client.post(f"/callenvoy/twilio/inbound/{b}", data=form, headers=sign(USER_TOKEN))
+    assert r.status_code == 200 and "<Number>+14155550177</Number>" in r.text
+    assert client.post("/callenvoy/twilio/inbound/u_nobody", data=form, headers=sign(USER_TOKEN)).status_code == 403
 
 
 def test_inbound_long_poll_is_scoped():
     b = new_user()
     store.save_profile(b, {"callback_number": "+14155550177"})
     store.update_call(place(b)["id"], answered_at=store.now())
-    fwd = calls.inbound({"From": CALL["to"], "CallSid": "CA1"})
+    fwd = calls.inbound({"From": CALL["to"], "CallSid": "CA1"}, b)
 
     async def go():
         with pytest.raises(calls.CallError):

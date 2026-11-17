@@ -2,10 +2,25 @@
 
 import os
 from pathlib import Path
+from urllib.parse import urlparse
+
+
+def env(name: str, default: str = "") -> str:
+    return os.environ.get(name, default)
+
+
+def public_base_url() -> str:
+    """Where the service is reached from outside: PUBLIC_BASE_URL, e.g. https://callenvoy.pragnyalabs.com
+    (or with a path, https://example.com/callenvoy, when it shares a host)."""
+    return env("PUBLIC_BASE_URL", "http://localhost:3020").rstrip("/")
+
 
 # --- Branding and paths ---
 APP_NAME = "CallEnvoy"
-BASE_PATH = "/callenvoy"
+# Both come from PUBLIC_BASE_URL, so a new address is one line in .env and no code change.
+BASE_PATH = urlparse(public_base_url()).path.rstrip("/")  # "" at the root of a host
+PUBLIC_ORIGIN = "{0.scheme}://{0.netloc}".format(urlparse(public_base_url()))  # allowed Origin of console writes
+REPO_URL = "https://github.com/sreenivasanac/holdforme"
 TOOL_PREFIX = "callenvoy_"
 ROOT = Path(__file__).resolve().parent.parent
 DB_PATH = ROOT / "data" / "callenvoy.db"
@@ -13,7 +28,6 @@ RECORDINGS_DIR = ROOT / "data" / "recordings"  # mp3 copies fetched once from Tw
 WEB_DIR = ROOT / "client" / "dist"
 VOICES_DIR = Path(__file__).resolve().parent / "static" / "voices"
 WEB_BUILD_COMMAND = "pnpm --dir client exec expo export --platform web"
-PUBLIC_ORIGIN = "https://pragnyalabs.com"
 DEV_ORIGIN = "http://localhost:8081"  # Expo web dev server, allowed only with CALLENVOY_DEV=1
 
 # --- Providers ---
@@ -27,21 +41,36 @@ CALL_SAMPLE_RATE = 8000
 
 # --- Voices (Fish Audio reference ids, searched 2026-11-10). Indian names are our labels. ---
 VOICES = [
-    {"name": "Hannah", "gender": "female", "accent": "US", "style": "professional, friendly, clear", "reference_id": "9a9cf47702da476aa4629e2506d4a857"},
-    {"name": "Sarah", "gender": "female", "accent": "US", "style": "young, soft, conversational", "reference_id": "933563129e564b19a115bedd57b7406a"},
-    {"name": "Laura", "gender": "female", "accent": "US", "style": "warm, calm, deeper", "reference_id": "e3cd384158934cc9a01029cd7d278634"},
-    {"name": "Sophia", "gender": "female", "accent": "British", "style": "professional", "reference_id": "0efe38923c0b445ab09382e851ae1e30"},
-    {"name": "Ethan", "gender": "male", "accent": "US", "style": "clear, calm, professional", "reference_id": "536d3a5e000945adb7038665781a4aca"},
-    {"name": "Adrian", "gender": "male", "accent": "US", "style": "deep, slow, steady", "reference_id": "bf322df2096a46f18c579d0baa36f41d"},
-    {"name": "Jordan", "gender": "male", "accent": "US", "style": "older, confident, measured", "reference_id": "79d0bd3e4e5444b18f7b6d89b5927bf1"},
-    {"name": "Rohan", "gender": "male", "accent": "Indian English", "style": "professional, measured", "reference_id": "73770ea2927d46c19e461e7e812b2f95"},
-    {"name": "Vikram", "gender": "male", "accent": "Indian English", "style": "calm, steady, middle-aged", "reference_id": "ca1c77bf09ee4497ac5cd97c5db1f6d5"},
-    {"name": "Meera", "gender": "female", "accent": "Indian English", "style": "friendly, professional, middle-aged", "reference_id": "b1a1d760d9604bdb957a56eec3460f1b"},
+    {"provider": "fish", "name": "Hannah", "gender": "female", "accent": "US", "style": "professional, friendly, clear", "reference_id": "9a9cf47702da476aa4629e2506d4a857"},
+    {"provider": "fish", "name": "Sarah", "gender": "female", "accent": "US", "style": "young, soft, conversational", "reference_id": "933563129e564b19a115bedd57b7406a"},
+    {"provider": "fish", "name": "Laura", "gender": "female", "accent": "US", "style": "warm, calm, deeper", "reference_id": "e3cd384158934cc9a01029cd7d278634"},
+    {"provider": "fish", "name": "Sophia", "gender": "female", "accent": "British", "style": "professional", "reference_id": "0efe38923c0b445ab09382e851ae1e30"},
+    {"provider": "fish", "name": "Ethan", "gender": "male", "accent": "US", "style": "clear, calm, professional", "reference_id": "536d3a5e000945adb7038665781a4aca"},
+    {"provider": "fish", "name": "Adrian", "gender": "male", "accent": "US", "style": "deep, slow, steady", "reference_id": "bf322df2096a46f18c579d0baa36f41d"},
+    {"provider": "fish", "name": "Jordan", "gender": "male", "accent": "US", "style": "older, confident, measured", "reference_id": "79d0bd3e4e5444b18f7b6d89b5927bf1"},
+    {"provider": "fish", "name": "Rohan", "gender": "male", "accent": "Indian English", "style": "professional, measured", "reference_id": "73770ea2927d46c19e461e7e812b2f95"},
+    {"provider": "fish", "name": "Vikram", "gender": "male", "accent": "Indian English", "style": "calm, steady, middle-aged", "reference_id": "ca1c77bf09ee4497ac5cd97c5db1f6d5"},
+    {"provider": "fish", "name": "Meera", "gender": "female", "accent": "Indian English", "style": "friendly, professional, middle-aged", "reference_id": "b1a1d760d9604bdb957a56eec3460f1b"},
 ]
 # Fish Official spares if a listed voice sounds wrong on a phone line: Sheila f3a2b90078d54a65af4b95f63bc7798e,
 # Kai 0db6e93af420470b9d9b9a886dbaa954, Cody f663fef9788d4ac0a6bfe36f1b3c871f.
+# OpenAI voices: what a call uses when the account has no Fish key ("voice follows the saved keys").
+OPENAI_VOICES = [
+    {"provider": "openai", "name": "Marin", "gender": "female", "accent": "US", "style": "warm, natural", "reference_id": "marin"},
+    {"provider": "openai", "name": "Coral", "gender": "female", "accent": "US", "style": "bright, friendly", "reference_id": "coral"},
+    {"provider": "openai", "name": "Nova", "gender": "female", "accent": "US", "style": "clear, energetic", "reference_id": "nova"},
+    {"provider": "openai", "name": "Cedar", "gender": "male", "accent": "US", "style": "calm, natural", "reference_id": "cedar"},
+    {"provider": "openai", "name": "Ash", "gender": "male", "accent": "US", "style": "direct, confident", "reference_id": "ash"},
+    {"provider": "openai", "name": "Onyx", "gender": "male", "accent": "US", "style": "deep, steady", "reference_id": "onyx"},
+]
+VOICES += OPENAI_VOICES
 VOICE_NAMES = [v["name"] for v in VOICES]
 DEFAULT_VOICE = "Hannah"
+DEFAULT_VOICES = {"fish": "Hannah", "openai": "Marin"}  # per voice provider
+OPENAI_TTS_MODEL = "gpt-4o-mini-tts"
+OPENAI_VAD_STT_MODEL = "gpt-transcribe"  # OpenAI hearing where the pipeline has no VAD of its own (bot.hearing)
+OPENAI_TTS_RATE = 24000  # what OpenAI sends; the transport resamples to the call's 8 kHz
+OPENAI_TTS_STYLE = "A person on a quick, friendly phone call: natural pace, clear, not theatrical."
 DEMO_REP_VOICE_ID = "1f97ab64476c4e468a0888ae22954dab"  # Fish Official "Hugo"
 VOICE_SAMPLE_TEXT = "Hi, I'm calling on behalf of Alex about a billing question on the account. Do you have a moment?"
 # TODO: own Indian English voices through Fish voice design (API support not verified).
@@ -50,8 +79,16 @@ VOICE_SAMPLE_TEXT = "Hi, I'm calling on behalf of Alex about a billing question 
 API_KEY_MIN_LENGTH = 32
 DEFAULT_CALL_MINUTES = 30
 MAX_CALL_MINUTES = 120
-MAX_CONCURRENT_CALLS = 2
-DAILY_MINUTE_CAP = 240
+MAX_CONCURRENT_CALLS = 4  # the whole server (CPU of one small machine), all users together
+MAX_USER_CALLS = 2  # one user's calls at one time
+DAILY_MINUTE_CAP = 240  # one user's call minutes per day
+# Calls on the server's keys by anyone but the admin: only to the demo line, a few per account, short.
+DEMO_CALLS_PER_USER = 3
+DEMO_MAX_MINUTES = 6
+DEMO_DAILY_MINUTE_CAP = 90  # all such calls of all users per day
+# Provider keys a user can save (keys.py). The required ones make real calls possible.
+PROVIDERS = ("twilio", "openai", "deepgram", "fish")
+REQUIRED_PROVIDERS = ("twilio", "openai")
 HOLD_EXTENSION_MINUTES = 15
 TALK_EXTENSION_MINUTES = 2
 TALK_RECENT_SECONDS = 120  # "live talk" for the watchdog: either side spoke this recently
@@ -78,8 +115,7 @@ LIVE_STATUSES = ("queued", "dialing", "in_progress")
 # TODO: make these settings if the owner wants (QUESTION_WAIT_SECONDS, OWNER_DROP_GRACE_SECONDS, audio sizes).
 
 INBOUND_RING_SECONDS = 25  # forwarded callback rings the user this long
-# A callback goes to the user who last called that number in this window (else the admin), and is named after
-# that user's newest outbound call to it.
+# A callback is named after the user's newest outbound call to that number in this window.
 INBOUND_BUSINESS_DAYS = 14
 # TODO: SMS alerts (needs Twilio A2P 10DLC registration).
 
@@ -116,12 +152,6 @@ SIGNIN_LIMIT_GLOBAL = (60, 86400)
 EMAIL_MAX = 254
 SIGNUPS_OPEN_DEFAULT = True  # the admin's "New sign-ups" switch (stored in the database once changed)
 USER_SEEN_WRITE_SECONDS = 60  # users.last_seen_at is written at most this often
-# Profile key (not a setting) with the callback number this user asked Twilio to verify. Twilio's verified
-# caller IDs are shared by the whole account, so "from own" also needs this claim: no user can call from a
-# number that another user verified.
-CALLER_ID_CLAIM = "verified_caller_id"
-CALLER_ID_CLAIM_AT = "verified_caller_id_at"  # when that verification started
-CALLER_ID_CLAIM_SECONDS = 600  # another user cannot start a verification of the same number in this time
 SMTP_PORT = 587  # STARTTLS
 SMTP_TIMEOUT_SECONDS = 20
 
@@ -186,18 +216,16 @@ REQUIRED_ENV = ("TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_FROM_NUMBER",
                 "OPENAI_API_KEY", "FISH_API_KEY")
 
 
-def env(name: str, default: str = "") -> str:
-    return os.environ.get(name, default)
-
-
 def dev_mode() -> bool:
     return env("CALLENVOY_DEV") == "1"
 
 
-def public_base_url() -> str:
-    """PUBLIC_BASE_URL includes the base path, e.g. https://pragnyalabs.com/callenvoy."""
-    return env("PUBLIC_BASE_URL", f"http://localhost:3020{BASE_PATH}").rstrip("/")
+def voices(provider: str) -> list[dict]:
+    return [v for v in VOICES if v["provider"] == provider]
 
 
-def voice(name: str | None) -> dict:
-    return next((v for v in VOICES if v["name"] == name), next(v for v in VOICES if v["name"] == DEFAULT_VOICE))
+def voice(name: str | None, provider: str = "fish") -> dict:
+    """The named voice when this voice provider has it, else that provider's default (a Fish voice was picked,
+    but the call runs without a Fish key, or the other way round)."""
+    mine = voices(provider)
+    return next((v for v in mine if v["name"] == name), next(v for v in mine if v["name"] == DEFAULT_VOICES[provider]))

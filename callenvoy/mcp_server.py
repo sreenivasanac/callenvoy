@@ -15,7 +15,7 @@ from mcp.server.mcpserver import MCPServer
 from mcp_types import CallToolResult, TextContent, ToolAnnotations
 from pydantic import Field
 
-from . import auth, calls, config, owner
+from . import auth, calls, config, keys, owner
 
 log = logging.getLogger("callenvoy.mcp")
 P = config.TOOL_PREFIX
@@ -27,7 +27,8 @@ INSTRUCTIONS = f"""{config.APP_NAME} places real phone calls for the user and ca
 4. If open_questions is not empty, the person on the phone is waiting: ask the user and reply with {P}answer_question right away.
 5. If owner.state is "alerting", a person is on the line: tell the user they can join in the {config.APP_NAME} console, or ring their phone with {P}connect_me. Use {P}hand_back when the user wants the AI to continue.
 6. Tell the user the outcome in a line or two.
-Calls are US and Canada only. Use {P}verify_number once before calling from the user's own number (from: "own")."""
+Calls are US and Canada only. Use {P}verify_number once before calling from the user's own number (from: "own").
+Keys: real calls run on the user's own Twilio and OpenAI accounts. If {P}get_profile says keys_ready is false, the user must first add those keys in the {config.APP_NAME} console (Settings > Provider keys); you cannot add them. Until then only the demo line (demo_line in the profile, a made-up internet provider's billing line) can be called, demo_calls_left times: offer that as a first try."""
 
 RO = ToolAnnotations(read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=False)
 ACT = ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=False)
@@ -37,12 +38,16 @@ DIALS = ToolAnnotations(read_only_hint=False, destructive_hint=True, idempotent_
 CallId = Annotated[str, Field(min_length=1, max_length=40, description='the call id from callenvoy_place_call, e.g. "c_ab12..."')]
 
 
-def uid() -> str:
-    """The id of the key's user (set per request by main.AuthMiddleware). No user: refuse, never guess."""
+def me() -> dict:
+    """The key's user (set per request by main.AuthMiddleware). No user: refuse, never guess."""
     user = auth.CURRENT_USER.get()
     if not user:
         raise calls.CallError("no user for this request", 401)
-    return user["id"]
+    return user
+
+
+def uid() -> str:
+    return me()["id"]
 
 
 def ok(text: str, data: Any) -> CallToolResult:
@@ -112,8 +117,12 @@ def call_text(v: dict) -> str:
     return "\n".join(out)
 
 
-def profile_view(profile: dict, verified: bool) -> dict:
-    return {**profile, "caller_id_verified": verified}
+def profile_view(profile: dict, verified: bool, user: dict) -> dict:
+    """The profile plus what an agent must know before it dials: can this user call real numbers yet?"""
+    k = keys.view(user)
+    return {**profile, "caller_id_verified": verified, "keys_ready": k["ready"],
+            "demo_calls_left": calls.demo_calls_left(user), "demo_line": config.DEMO_LINE_NUMBER,
+            "voice_provider": k["voice_provider"]}
 
 
 def build() -> MCPServer:
@@ -189,8 +198,8 @@ def build() -> MCPServer:
     @tool(server, "get_profile", "Saved profile and settings",
           "The user's saved profile (name, callback number, calling profile details) and every call setting.", RO)
     async def get_profile() -> CallToolResult:
-        me = uid()
-        p = profile_view(calls.get_profile(me), (await calls.caller_id(me))["verified"])
+        user = me()
+        p = profile_view(calls.get_profile(user["id"]), (await calls.caller_id(user["id"]))["verified"], user)
         return ok("\n".join(f"{k}: {v}" for k, v in p.items() if v is not None), p)
 
     async def save_profile(**kw) -> CallToolResult:
@@ -204,7 +213,7 @@ def build() -> MCPServer:
 
     @tool(server, "list_voices", "List voices", "Every voice the AI can use, with a sample link and the default.", RO)
     async def list_voices() -> CallToolResult:
-        vs = voices()
+        vs = voices(keys.view(me())["voice_provider"])
         return ok("\n".join(f"{v['name']}{' (default)' if v['default'] else ''}: {v['gender']}, {v['accent']}, "
                             f"{v['style']} · {v['sample_url']}" for v in vs), {"voices": vs})
 
@@ -235,11 +244,13 @@ def _settings_signature(fn):
     return fn
 
 
-def voices() -> list[dict]:
+def voices(provider: str) -> list[dict]:
+    """The voices of one voice provider ("fish" or "openai": what the user's calls speak with)."""
     base = config.public_base_url()
-    return [{"name": v["name"], "gender": v["gender"], "accent": v["accent"], "style": v["style"],
-             "sample_url": f"{base}/static/voices/{v['name'].lower()}.mp3", "default": v["name"] == config.DEFAULT_VOICE}
-            for v in config.VOICES]
+    return [{"name": v["name"], "gender": v["gender"], "accent": v["accent"], "style": v["style"], "provider": provider,
+             "sample_url": f"{base}/static/voices/{v['name'].lower()}.mp3",
+             "default": v["name"] == config.DEFAULT_VOICES[provider]}
+            for v in config.voices(provider)]
 
 
 server = build()
