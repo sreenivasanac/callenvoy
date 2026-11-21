@@ -38,7 +38,13 @@ export default function PrivacyScreen() {
           'Recordings and consent',
           ['Calls are recorded unless you turn recording off, in Settings or for one call. Some US states require everyone on a call to agree to a recording. As the person who places the call, that is your responsibility.'],
         ],
-        ['Cookies', ['One cookie keeps you signed in. There are no analytics and no trackers.']],
+        [
+          'Cookies and visit counts',
+          [
+            'One cookie keeps you signed in. There are no advertising or third-party trackers.',
+            'This site counts visits with an analytics tool that runs on the same server (Umami). It sets no cookie and builds no profile of you. It records the page type you opened (for example "a call page", never which call), the site you came from, your country, and your browser and device type. It does not record phone numbers, what was said on a call, or anything from your account.',
+          ],
+        ],
         [
           'Deleting your data',
           [

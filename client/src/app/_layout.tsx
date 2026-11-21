@@ -17,10 +17,12 @@ import {
   useSettingsState,
 } from '../hooks';
 import { closeNotification, setupAlerts, showNotification, startRing } from '../platform/alerts';
+import { installAnalytics } from '../platform/analytics';
 import { installTheme } from '../platform/head';
 import { color, themeCss } from '../theme';
 
 installTheme(themeCss()); // before the first render: every colour in the styles is a CSS variable
+installAnalytics(); // anonymous visit counts on the operator's own host only
 
 const PUBLIC = ['/examples', '/privacy', '/terms'];
 

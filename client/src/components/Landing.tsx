@@ -3,6 +3,7 @@
 import { router, useLocalSearchParams } from 'expo-router';
 import { type ReactNode, useEffect, useState } from 'react';
 import { Linking, Pressable, StyleSheet, Text, View } from 'react-native';
+import { track } from '../platform/analytics';
 import { scrollToId } from '../platform/scroll';
 import { border, color, countdownHeight, font, gateWidth, heroColumns, lineHeight, radius, readWidth, space, useWide } from '../theme';
 import { ExampleCard, useExamples } from './Examples';
@@ -49,8 +50,21 @@ export function Landing() {
           </T>
           <Text style={s.lead}>It gets through the phone menu, waits on hold, and talks to the person. You can listen in and take over at any time.</Text>
           <View style={s.actions}>
-            <Button label="Get started" onPress={start} />
-            <Button label="Hear a real call" kind="secondary" onPress={() => scrollToId(ID.sample)} />
+            <Button
+              label="Get started"
+              onPress={() => {
+                track('get-started');
+                start();
+              }}
+            />
+            <Button
+              label="Hear a real call"
+              kind="secondary"
+              onPress={() => {
+                track('hear-sample');
+                scrollToId(ID.sample);
+              }}
+            />
           </View>
           <T v="fine">Sign in with an email link. Your first call, to our demo line, is free.</T>
         </View>
@@ -118,7 +132,14 @@ export function Landing() {
       <Section title="Open source">
         <View style={s.readable}>
           <T v="soft">Read how it works, report a problem, or run your own copy on your own server. The code is on GitHub.</T>
-          <Button label="See the code on GitHub" kind="secondary" onPress={() => void Linking.openURL(REPO_URL)} />
+          <Button
+            label="See the code on GitHub"
+            kind="secondary"
+            onPress={() => {
+              track('github');
+              void Linking.openURL(REPO_URL);
+            }}
+          />
         </View>
       </Section>
 

@@ -6,6 +6,7 @@ import { useSession } from '../hooks';
 import { setTitle } from '../platform/head';
 import { border, color, maxContent, readWidth, space, useWide } from '../theme';
 import { AppBar, BarLink } from './TopBar';
+import { track } from '../platform/analytics';
 import { Button, T, text, TextLink } from './ui';
 
 export const REPO_URL = 'https://github.com/sreenivasanac/holdforme';
@@ -28,7 +29,15 @@ export function PublicPage({ title, children, onSignIn }: { title: string; child
         {me?.signed_in ? (
           <Button label={wide ? 'Open the console' : 'Console'} size="small" onPress={() => router.push('/')} />
         ) : (
-          <Button label="Sign in" kind="secondary" size="small" onPress={onSignIn ?? (() => router.push('/?signin=1'))} />
+          <Button
+            label="Sign in"
+            kind="secondary"
+            size="small"
+            onPress={() => {
+              track('sign-in');
+              (onSignIn ?? (() => router.push('/?signin=1')))();
+            }}
+          />
         )}
       </AppBar>
       <ScrollView style={s.fill} contentContainerStyle={s.page}>
