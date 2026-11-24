@@ -318,6 +318,7 @@ const TOOLS: [string, string][] = [
   ['answer_question', 'Answers a question the AI asks during a call.'],
   ['connect_me', 'Brings you onto a live call, by phone or in this console.'],
   ['hand_back', 'Gives the call back to the AI.'],
+  ['set_mode', 'Changes a live call: the AI handles it, or it brings you on when a person answers.'],
   ['get_recordings', 'Gets the recording links of a call.'],
   ['get_profile', 'Reads your saved profile and settings.'],
   ['save_profile', 'Changes your profile and settings.'],
@@ -342,6 +343,9 @@ export function ToolsCard() {
               <Text style={s.soft}>{d}</Text>
             </Text>
           ))}
+          <Text style={[text.base, s.soft]}>
+            If you have not saved how calls are handled, the agent asks before it dials: the AI does the whole call, or it brings you on when a person answers.
+          </Text>
           <Text style={text.subhead}>Things to say to the agent</Text>
           {EXAMPLES.map((e) => (
             <Text key={e} style={[text.base, s.soft]}>

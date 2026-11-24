@@ -80,7 +80,7 @@ def test_save_profile_round_trips_every_setting():
               "reach": "phone", "alert_wait_seconds": 30, "phone_ring_seconds": 40, "no_answer": "end_politely",
               "alert_on_human": False, "listen_in": True, "alert_sound": False, "alert_notification": False,
               "alert_push": False, "push_shows_business": False, "timezone": "America/Los_Angeles",
-              "ai_model": "gpt-6.1-terra"}
+              "ai_model": "gpt-6.1-terra", "engine": "live"}
     values.update({k: "x" for k in config.PROFILE_FIELDS})
     assert set(values) == set(config.SETTINGS)
     p = calls.save_profile(uid(), values)

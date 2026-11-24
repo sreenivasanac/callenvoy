@@ -199,6 +199,9 @@ export function useSettingsState(): SettingsState {
         if (stop) return;
         setConfig(c);
         setSettings(p);
+        // The AI needs today's date: a profile without a time zone gets this browser's, once.
+        const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+        if ('timezone' in p && p.timezone == null && zone) void api.saveProfile({ timezone: zone }).then((next) => !stop && setSettings(next), () => {});
       })
       .catch((e) => !stop && setError(message(e)));
     return () => {

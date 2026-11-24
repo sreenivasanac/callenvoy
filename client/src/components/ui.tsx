@@ -327,6 +327,47 @@ export function Segmented<V extends string>({
   );
 }
 
+/** A radio list where each choice has a title and one line about it (the AI model). */
+export function Choices<V extends string>({
+  label,
+  value,
+  options,
+  onChange,
+  help,
+}: {
+  label: string;
+  value: V;
+  options: readonly { id: V; title: string; about?: string; right?: string }[];
+  onChange: (v: V) => void;
+  help?: ReactNode;
+}) {
+  return (
+    <Field label={label} help={help}>
+      <View role="radiogroup" aria-label={label} style={s.choices}>
+        {options.map((o) => {
+          const on = o.id === value;
+          return (
+            <Pressable
+              key={o.id}
+              role="radio"
+              aria-checked={on}
+              onPress={() => onChange(o.id)}
+              style={(st: PressState) => [s.choice, on && s.choiceOn, !on && st.hovered && s.segHover]}
+            >
+              <View style={[s.choiceDot, on && s.choiceDotOn]} aria-hidden />
+              <View style={s.fill}>
+                <Text style={[text.base, s.semi]}>{o.title}</Text>
+                {o.about ? <Text style={text.fine}>{o.about}</Text> : null}
+              </View>
+              {o.right ? <Text style={[text.fine, s.choiceRight]}>{o.right}</Text> : null}
+            </Pressable>
+          );
+        })}
+      </View>
+    </Field>
+  );
+}
+
 /** A row of pill choices that wraps (filters, client tabs), as a radio group. */
 export function Chips<V extends string>({
   label,
