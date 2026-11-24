@@ -100,7 +100,7 @@ export function LiveCallCard({ call }: { call: Call }) {
   const now = useNow();
   const go = useGo();
   const st = statusLabel(call);
-  const needsYou = call.owner.state === 'alerting' || call.owner.state === 'ringing';
+  const needsYou = call.owner.state === 'alerting' || call.owner.state === 'ringing' || call.open_questions.some((q) => q.kind);
   return (
     <Pressable
       role="link"

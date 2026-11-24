@@ -12,7 +12,7 @@ export default function TermsScreen() {
           'What you get',
           [
             'A service that places phone calls for you with an AI, and lets you listen in and take over. It is provided as it is, with no warranty. It can change, have limits, or stop.',
-            'A new account can call the demo line a few times for free. Calls to real numbers run on your own Twilio and OpenAI keys.',
+            'Calls to real numbers run on your own Twilio and OpenAI keys. Where a server has a demo line, a new account can call it a few times for free.',
           ],
         ],
         [

@@ -356,10 +356,12 @@ export function Choices<V extends string>({
             >
               <View style={[s.choiceDot, on && s.choiceDotOn]} aria-hidden />
               <View style={s.fill}>
-                <Text style={[text.base, s.semi]}>{o.title}</Text>
+                <View style={s.choiceTop}>
+                  <Text style={[text.base, s.semi]}>{o.title}</Text>
+                  {o.right ? <Text style={[text.fine, s.choiceRight]}>{o.right}</Text> : null}
+                </View>
                 {o.about ? <Text style={text.fine}>{o.about}</Text> : null}
               </View>
-              {o.right ? <Text style={[text.fine, s.choiceRight]}>{o.right}</Text> : null}
             </Pressable>
           );
         })}
@@ -607,6 +609,13 @@ const s = StyleSheet.create({
   segOn: { backgroundColor: color.card, borderColor: color.brand },
   segHover: { backgroundColor: color.card },
   chips: { flexDirection: 'row', flexWrap: 'wrap', gap: space.s },
+  choices: { gap: space.sm },
+  choice: { flexDirection: 'row', alignItems: 'center', gap: space.ml, paddingVertical: space.m, paddingHorizontal: space.ml, borderRadius: radius.m, borderWidth: border.thin, borderColor: color.line, backgroundColor: color.card },
+  choiceOn: { backgroundColor: color.selected, borderColor: color.brand },
+  choiceDot: { width: space.l, height: space.l, borderRadius: radius.pill, borderWidth: border.outline, borderColor: color.muted, flexShrink: 0 },
+  choiceDotOn: { borderColor: color.brand, backgroundColor: color.brand },
+  choiceTop: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'baseline', justifyContent: 'space-between', columnGap: space.ml },
+  choiceRight: { fontVariant: ['tabular-nums'] },
   chip: { paddingVertical: space.s, paddingHorizontal: space.l, borderRadius: radius.pill, borderWidth: border.thin, borderColor: color.line, backgroundColor: color.card },
   chipOn: { backgroundColor: color.fg, borderColor: color.fg },
   chipText: { color: color.soft, fontSize: font.size.m, fontWeight: font.weight.semi },

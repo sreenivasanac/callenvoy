@@ -12,7 +12,7 @@ import { Button, Card, Cell, Note, Row, Stack, T, TextField, text } from './ui';
 const HOW = [
   'A value is saved encrypted and never shown again, not to you, not to an agent, not to the admin.',
   'The AI model never sees it. When the business asks, the server says the value on the call or keys it in.',
-  'A call may use one only if you allow it for that call: tick it on New call, or answer when the call asks.',
+  'A call may use one only if you allow it for that call: turn it on in New call, or answer when the call asks.',
   'It is masked in the transcript, and the recording pauses while it is said.',
 ];
 

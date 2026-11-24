@@ -16,10 +16,13 @@ export function money(n: number) {
   return n > 0 && n < 0.005 ? 'under 1 cent' : `$${n.toFixed(2)}`;
 }
 
-/** "about $0.08", or with "+ AI model" when the model's price is not known. */
+/** "about $0.08", or "over $0.08" when the AI model's price is not known and so not in the total. */
 export function costText(c: Cost) {
-  return `about ${money(c.total)}${c.complete ? '' : ' + AI model'}`;
+  return `${c.complete ? 'about' : 'over'} ${money(c.total)}`;
 }
+
+/** A short text from the server ("the service does not accept this key") as a sentence. */
+export const sentence = (t: string) => t.charAt(0).toUpperCase() + t.slice(1) + (/[.!?]$/.test(t) ? '' : '.');
 
 export const ENDED_BY: Record<NonNullable<Evals['ended_by']>, string> = { ai: 'The AI', them: 'The other side', you: 'You', time_limit: 'The time limit' };
 
@@ -89,6 +92,7 @@ export function statusLabel(c: Call): { text: string; tone: Tone; live: boolean 
 /** What the user is doing on the call, or asked to do. "alert" (the accent) only when the call waits for them. */
 export function ownerLabel(c: Call): { text: string; tone: Tone; live?: boolean } | null {
   if (c.finished) return null;
+  if (c.open_questions.some((q) => q.kind)) return { text: 'Needs your OK', tone: 'alert', live: true };
   switch (c.owner.state) {
     case 'alerting':
       return { text: 'Waiting for you', tone: 'alert', live: true };

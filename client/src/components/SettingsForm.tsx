@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import { api, ApiError, type Config, type Mode, type ProfileField, type Settings } from '../api';
-import { phone, toE164 } from '../format';
+import { phone, sentence, toE164 } from '../format';
 import { useCallerId, useSettings } from '../hooks';
 import { scrollToId } from '../platform/scroll';
 import { border, color, font, maxContent, space } from '../theme';
@@ -275,11 +275,13 @@ export function SettingsForm({ config, settings, focus }: { config: Config; sett
             <Choices
               label="Model for your calls"
               value={f.ai_model ?? config.ai_models[0].id}
-              options={config.ai_models.map((m) => ({ id: m.id, title: m.id === 'custom' ? 'Your own service' : m.id, about: sentence(m.about), right: priceText(m.price) }))}
+              options={config.ai_models.map((m) => ({ id: m.id, title: m.id === 'custom' ? 'Your own service' : m.id, about: m.id === 'custom' ? m.about.replace(/^your own service: /, '') : sentence(m.about), right: priceText(m.price) }))}
               onChange={set('ai_model')}
               help="Prices are the provider's list prices per 1 million tokens. A two-minute call uses about 15,000, most of them at the lower repeat rate."
             />
-            <T v="fine">A cheaper model can mishandle a phone menu or hang up too early. Try a model on the demo line before you trust it with a real call.</T>
+            <T v="fine">
+              A cheaper model can mishandle a phone menu or hang up too early. {config.demo ? 'Try a model on the demo line before you trust it with a real call.' : 'Try a model on a call that does not matter before you trust it with one that does.'}
+            </T>
           </Stack>
         </Card>
       ) : null}
@@ -322,7 +324,6 @@ export function SettingsForm({ config, settings, focus }: { config: Config; sett
   );
 }
 
-const sentence = (t: string) => t.charAt(0).toUpperCase() + t.slice(1) + (/[.!?]$/.test(t) ? '' : '.');
 const dollars = (n: number) => `$${n < 1 ? n.toFixed(2) : n.toFixed(n % 1 ? 2 : 0)}`;
 /** "$0.10 in, $0.50 out" per 1M tokens, or a note when the price is not known. */
 const priceText = (p: [number, number, number] | null) => (p ? `${dollars(p[0])} in, ${dollars(p[2])} out` : 'price not known');

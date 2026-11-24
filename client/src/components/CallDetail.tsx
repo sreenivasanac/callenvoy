@@ -9,7 +9,7 @@ import { border, color, font, lineHeight, lineMaxWidth, radius, space, transcrip
 import { CallLine } from './CallLine';
 import { StatusBadge } from './CallList';
 import { RecordingPlayer, usePlayer, type PlayerControl } from './RecordingPlayer';
-import { Button, Card, Disclosure, LiveDot, Note, Pill, Segmented, SwitchRow, T, TextField, text } from './ui';
+import { Button, Card, Disclosure, LiveDot, Note, Pill, Segmented, Stack, SwitchRow, T, TextField, text } from './ui';
 
 const HAND_SCROLL_PAUSE_MS = 5000; // no automatic scrolling this long after the reader scrolled the transcript
 const AUTO_SCROLL_MS = 1000; // scroll events this soon after an automatic scroll are not the reader's
@@ -313,7 +313,8 @@ export function ModeSwitch({ call }: { call: Call }) {
   const mode = chosen.mode ?? call.mode;
   return (
     <Card label="How this call is handled">
-      <T v="h3" level={2}>
+      <Stack gap={space.ml}>
+      <T v="h3" level={2} style={s.h2}>
         How this call is handled
       </T>
       <Segmented
@@ -329,6 +330,7 @@ export function ModeSwitch({ call }: { call: Call }) {
           {error}
         </Text>
       ) : null}
+      </Stack>
     </Card>
   );
 }

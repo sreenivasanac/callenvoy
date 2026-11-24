@@ -14,6 +14,11 @@
 //   POST /__mock/socket?id=<call>&send=replaced|error|drop   acts on that call's open audio socket
 //   POST /__mock/alert?id=<call>&state=alerting|none&seconds=20   starts or ends an alert (a new alert_until each time)
 //   GET  /__mock/count?id=<call>                           how often GET /api/calls/<id> was asked
+//   POST /__mock/demo?on=0|1             the server has a demo line or not (config.demo null, auth/me demo false)
+//   GET  /__mock/frame?path=/calls/c_alert&w=390&h=844   that page in a phone-size frame, centered (a headless Chrome window cannot be
+//                                        narrower than 500 px; dev/make-screenshots.sh takes the phone picture from this)
+//   POST /__mock/anyhost?on=0|1          "another AI service" may be any address (a self-hosted server) or only the known ones
+// Calls of dana: c_secret asks for a saved protected detail (permission) and for one to type (secret).
 //   POST /__mock/keys?can_save=0|1       key saving on or off (the server has an encryption key or not)
 //   /connect?request=demo                an agent's sign-in request ("Claude Desktop"); request=expired answers 404
 // Provider keys: a Twilio SID that is not AC + 32 hex, a token or key with "bad" in it, or an OpenAI key without sk- is refused.
@@ -49,7 +54,7 @@ const OPENAI_VOICES = [
 
 const newProfile = (over = {}) => ({
   name: null, callback_number: null, details: null,
-  voice: 'Hannah', record_calls: true, max_minutes: 30, mode: 'handle', reach: 'app_then_phone', alert_wait_seconds: 20,
+  voice: 'Hannah', ai_model: 'gpt-6-luna', timezone: null, record_calls: true, max_minutes: 30, mode: 'handle', reach: 'app_then_phone', alert_wait_seconds: 20,
   phone_ring_seconds: 25, no_answer: 'ai_handles', alert_on_human: true, listen_in: false, alert_sound: true,
   alert_notification: true, alert_push: true, push_shows_business: true, caller_id: 'callenvoy', leave_voicemail: true,
   name_pronunciation: null, assistant_name: null, email: null, address: null, date_of_birth: null,
@@ -58,7 +63,7 @@ const newProfile = (over = {}) => ({
   ...over,
 });
 // As the server's config.SETTINGS: text fields with their max length, int fields with their range.
-const TEXT_LIMITS = { name: 80, details: 3000, name_pronunciation: 80, assistant_name: 30, email: 120, address: 300, date_of_birth: 40,
+const TEXT_LIMITS = { name: 80, timezone: 60, details: 3000, name_pronunciation: 80, assistant_name: 30, email: 120, address: 300, date_of_birth: 40,
   insurance_carrier: 80, insurance_member_id: 60, insurance_group_number: 60, dental_insurance_carrier: 80, dental_insurance_member_id: 60,
   vehicle: 120, vin: 40, frequent_flyer_numbers: 300, known_traveler_number: 40, redress_number: 40 };
 const RANGES = { max_minutes: [1, 120], alert_wait_seconds: [5, 120], phone_ring_seconds: [10, 60] };
@@ -66,6 +71,37 @@ const RANGES = { max_minutes: [1, 120], alert_wait_seconds: [5, 120], phone_ring
 const DEMO = { number: '+16562405137', business: 'Northstar Internet', goal: 'Ask billing to remove a wrong charge of 30 dollars on the October bill and get a reference number.',
   facts: 'Service address: 12 Oak Street, Springfield.', menu_tips: 'Billing is option 1.' };
 const DAILY_MINUTE_CAP = 240;
+let demoOn = true; // this server has a demo line
+let anyHost = false; // another AI service: any address allowed (LLM_ANY_HOST=1 on a self-hosted server)
+// As config.py: the AI models with list prices per 1M tokens (input, cached input, output), and the other list prices.
+const AI_MODELS = [
+  { id: 'gpt-6-luna', about: 'fast and the cheapest', price: [0.1, 0.01, 0.5] },
+  { id: 'gpt-6.1-terra', about: 'stronger, about 10 times the price', price: [1, 0.05, 5] },
+  { id: 'gpt-4.1', about: 'the earlier default; OpenAI ends it on January 14, 2027', price: [2, 0.5, 8] },
+];
+const PRICES = { twilio_minute: 0.014, twilio_stream_minute: 0.004, twilio_recording_minute: 0.0025, stt_minute: { deepgram: 0.0077, openai: 0.006 }, tts_1k_chars: { fish: 0.015, openai: 0.016 } };
+const LLM_SERVICES = { 'Google Gemini': 'https://generativelanguage.googleapis.com/v1beta/openai', OpenRouter: 'https://openrouter.ai/api/v1', Groq: 'https://api.groq.com/openai/v1',
+  Together: 'https://api.together.xyz/v1', Fireworks: 'https://api.fireworks.ai/inference/v1', Cerebras: 'https://api.cerebras.ai/v1', DeepSeek: 'https://api.deepseek.com/v1',
+  Mistral: 'https://api.mistral.ai/v1', xAI: 'https://api.x.ai/v1', OpenAI: 'https://api.openai.com/v1' };
+/** As usage.cost: an estimate from list prices, null until the call has ended (or when it never connected). */
+function costOf(c) {
+  if (!c.finished || !c.talk_seconds) return null;
+  const min = Math.ceil(c.talk_seconds / 60);
+  const custom = c.ai_model === 'custom';
+  const parts = { phone: +(min * (0.014 + 0.004 + (c.recorded ? 0.0025 : 0))).toFixed(4), hearing: +((c.talk_seconds / 60) * 0.0077).toFixed(4),
+    ai: custom ? null : +(c.talk_seconds * 0.000004).toFixed(4), voice: +(c.talk_seconds * 0.00004).toFixed(4) };
+  return { total: +Object.values(parts).reduce((n, v) => n + (v ?? 0), 0).toFixed(3), parts, complete: !custom, model: custom ? 'llama-4-fast' : 'gpt-6-luna' };
+}
+/** As calls.evals: plain measures counted from the call's own records. */
+function evalsOf(c) {
+  const events = c.transcript.filter((l) => l.who === 'event').map((l) => l.text);
+  const person = c.transcript.find((l) => l.who === 'ai' && l.at != null);
+  return { goal: c.outcome?.result ?? null, reached_person: !!person || !!c.owner_seconds, seconds_to_person: person ? Math.round(c.transcript.findLast((l) => l.who === 'them' && l.at != null && l.at < person.at)?.at ?? person.at) : null,
+    keys_pressed: events.filter((e) => e.startsWith('pressed ')).length, questions_asked: c.answered_questions.length + c.open_questions.length,
+    ended_by: !c.finished ? null : c.outcome?.summary === 'You hung up the call.' ? 'you' : events.some((e) => /ended by AI/i.test(e)) ? 'ai' : 'them', follow_up: c.follow_up ?? null };
+}
+/** A call as the API sends it. */
+const callView = (c) => ({ ...c, evals: evalsOf(c), cost: costOf(c), secrets_allowed: c.secrets_allowed ?? [], follow_up: undefined, ai_model: undefined });
 const graces = new Map(); // call id -> the drop-grace timer (kept off the call object: it is sent as JSON)
 
 const line = (n, sAgo, who, text) => ({ n, t: iso(sAgo * 1000), who, text, at: null });
@@ -75,9 +111,9 @@ const one = Buffer.concat(voiceFiles.map((f) => fs.readFileSync(path.join(VOICE_
 const RECORDING = Buffer.concat([one, one]);
 const RECORDING_SECONDS = Math.round((RECORDING.length * 8) / 128000) || 120;
 let recordingFails = false;
-const holdLines = (s) => [
-  line(0, s, 'event', 'Dialing +1 (656) 240-5137'),
-  line(1, s - 4, 'them', 'Thank you for calling Northstar Internet. For billing, press 1. For technical support, press 2.'),
+const holdLines = (s, who = 'Northstar Internet', dialed = '+1 (656) 240-5137', menu = 'For billing, press 1. For technical support, press 2.') => [
+  line(0, s, 'event', `Dialing ${dialed}`),
+  line(1, s - 4, 'them', `Thank you for calling ${who}. ${menu}`),
   line(2, s - 6, 'event', 'pressed 1'),
   line(3, s - 19, 'them', 'All of our agents are busy. Your call is important to us. Please continue to hold.'),
   line(4, s - 20, 'event', 'waiting on hold'),
@@ -126,6 +162,12 @@ function sampleCalls() {
       open_questions: [{ id: 'q_1', question: 'What is the service address on the account?' }],
       transcript: [...holdLines(715), line(5, 40, 'them', 'Thanks. And what is the service address on the account?'),
         line(6, 37, 'ai', 'One moment, let me check that.'), line(7, 36, 'event', 'asked owner: What is the service address on the account?')] }),
+    base('c_secret', { business: 'Evergreen Credit Union', number: '+15035550161', created_at: iso(7 * MIN), secrets_allowed: [],
+      goal: 'Ask why the debit card was declined yesterday and get it unblocked.',
+      open_questions: [{ id: 'q_p', question: 'The call asks for your SSN. Allow it for this call?', kind: 'permission', label: 'SSN' },
+        { id: 'q_s', question: 'The call asks for: Card PIN. Type it to give it on this call only.', kind: 'secret', label: 'Card PIN' }],
+      transcript: [...holdLines(415, 'Evergreen Credit Union', '+1 (503) 555-0161', 'For card services, press 1. For loans, press 2.'), line(5, 30, 'them', 'This is Jordan in card services. To open the account I need the last four of the Social Security number and the card PIN.'),
+        line(6, 27, 'ai', 'One moment.'), line(7, 26, 'event', 'asked owner: The call asks for your SSN. Allow it for this call?')] }),
     base('c_hold', { business: 'Cascade Power & Light', number: '+15035550178', phase: 'on_hold', created_at: iso(4 * MIN), transcript: holdLines(230) }),
     base('c_phone', { business: 'Bayview Dental', number: '+14155550126', phase: 'owner_on_call', created_at: iso(6 * MIN),
       owner: { state: 'on_call', via: 'phone', alert_until: null, unreachable: false },
@@ -135,6 +177,16 @@ function sampleCalls() {
       answered_questions: [{ id: 'q_0', question: 'What is the service address on the account?', answer: '1820 SE Alder St, Apt 4, Portland OR 97214' }],
       recordings: [{ url: '/r/demo', duration_seconds: RECORDING_SECONDS }],
       transcript: doneLines(60 * MIN) }),
+    base('c_partial', { business: 'Lakeview Fitness', number: '+15035550133', status: 'completed', phase: null, finished: true, created_at: iso(5 * 60 * MIN), ended_at: iso(5 * 60 * MIN - 236_000), talk_seconds: 236,
+      goal: 'Ask whether the monthly plan can switch to the yearly offer, and whether the annual fee already paid carries over.', secrets_allowed: ['Member PIN'], ai_model: 'custom',
+      follow_up: 'Visit the club between 12 and 5 to switch the plan at the front desk.',
+      outcome: { result: 'partial', summary: 'Jared at the club said the switch is possible but must be done in person. Whether the annual fee carries over was not confirmed.', details: { spoke_to: 'Jared', best_time: '12:00 to 5:00' } },
+      recordings: [{ url: '/r/demo', duration_seconds: RECORDING_SECONDS }],
+      transcript: [[null, 'event', 'Dialing +1 (503) 555-0133'], [2.0, 'them', 'Thank you for calling Lakeview Fitness. Say membership, billing, or team.'], [8.1, 'ai', 'Membership.'],
+        [14.0, 'them', 'Hey, this is Jared. How may I help you?'], [18.2, 'ai', 'Hi Jared, I am calling on behalf of Dana Reyes about switching to the yearly plan.'],
+        [26.0, 'them', 'Can I get the member PIN for the account?'], [29.5, 'event', 'gave Member PIN by voice'], [36.0, 'them', 'I heard the PIN as [Member PIN]. Thanks. The switch has to be done in the club.'],
+        [48.0, 'ai', 'Understood. Does the annual fee that was already paid carry over?'], [55.0, 'them', 'I believe so, but the front desk has to look at it.'], [62.0, 'ai', 'Thank you, Jared. Goodbye.'], [66.0, 'event', 'call ended by AI']]
+        .map(([at, who, text], n) => ({ n, t: iso(5 * 60 * MIN - (at ?? 0) * 1000), who, text, at: who === 'event' ? null : at })) }),
     base('c_handed', { business: 'City Water Billing', number: '+19715550110', status: 'completed', phase: null, finished: true, recorded: false,
       created_at: iso(26 * 60 * MIN), ended_at: iso(26 * 60 * MIN - 756_000), talk_seconds: 756, owner_seconds: 44,
       outcome: { result: 'handed_to_owner', summary: 'You took over after the AI gave the account number. The account was moved back to the old plan.', details: {} },
@@ -176,10 +228,10 @@ const newKey = () => 'ce_live_' + Array.from(crypto.randomBytes(32), (b) => ALPH
 const withPrefix = (k) => ({ ...k, prefix: k.key.slice(0, 12) });
 const DAY = 24 * 60 * MIN;
 const newUser = (id, email, over = {}) => ({ id, email, created_at: iso(0), last_seen_at: iso(0), disabled: false, calls: [], keys: [], profile: newProfile(), verifiedAt: 0,
-  providers: { twilio: null, openai: null, deepgram: null, fish: null }, demoCalls: 0, ...over });
+  providers: { twilio: null, openai: null, deepgram: null, fish: null, llm: null }, demoCalls: 0, secrets: [], ...over });
 // ---- Provider keys: the admin uses the server's; everyone else brings Twilio and OpenAI (Deepgram and Fish are optional) ----
 const DEMO_CALLS = 2; // free demo-line calls of a user without own keys
-const PROVIDERS = ['twilio', 'openai', 'deepgram', 'fish'];
+const PROVIDERS = ['twilio', 'openai', 'deepgram', 'fish', 'llm'];
 let canSave = true;
 const isAdmin = (u) => u.email === OWNER_EMAIL;
 const keysReady = (u) => isAdmin(u) || !!(u.providers.twilio && u.providers.openai);
@@ -188,13 +240,16 @@ const keysState = (u) => ({ ready: keysReady(u), server_keys: isAdmin(u), demo_c
 const hearing = (u) => (isAdmin(u) || u.providers.deepgram ? 'deepgram' : 'openai');
 const voiceProvider = (u) => (isAdmin(u) || u.providers.fish ? 'fish' : 'openai');
 const providersView = (u) => ({ can_save: canSave, ready: keysReady(u), server_keys: isAdmin(u), hearing: hearing(u), voice_provider: voiceProvider(u),
-  inbound_url: `https://callenvoy.pragnyalabs.com/twilio/inbound/${u.id}`,
+  inbound_url: `https://callenvoy.pragnyalabs.com/twilio/inbound/${u.id}`, llm_services: LLM_SERVICES, llm_any_host: anyHost,
   providers: Object.fromEntries(PROVIDERS.map((n) => [n, { saved: !!u.providers[n], hint: u.providers[n]?.hint ?? null, checked_at: u.providers[n]?.checked_at ?? null,
-    ...(n === 'twilio' ? { from_number: u.providers.twilio?.from_number ?? null } : {}) }])) });
+    ...(n === 'twilio' ? { from_number: u.providers.twilio?.from_number ?? null, note: null } : {}),
+    ...(n === 'llm' ? { base_url: u.providers.llm?.base_url ?? null, model: u.providers.llm?.model ?? null } : {}) }])) });
+const secretsView = (u) => ({ can_save: canSave, secrets: u.secrets.map(({ label, hint, created_at }) => ({ label, hint, created_at })) });
 const users = [
   newUser('u_dana', OWNER_EMAIL, {
     created_at: iso(40 * DAY), last_seen_at: iso(2 * MIN), calls: sampleCalls(),
-    profile: newProfile({ name: 'Dana Reyes', callback_number: '+15035550142', details: 'Home address: 1820 SE Alder St, Apt 4, Portland OR 97214', email: OWNER_EMAIL }),
+    profile: newProfile({ name: 'Dana Reyes', callback_number: '+15035550142', details: 'Home address: 1820 SE Alder St, Apt 4, Portland OR 97214', email: OWNER_EMAIL, timezone: 'America/Los_Angeles' }),
+    secrets: [{ label: 'SSN', hint: 'ends in 89', created_at: iso(9 * DAY) }, { label: 'Member PIN', hint: 'saved', created_at: iso(2 * DAY) }],
     keys: [
       { id: 'k_env', name: 'First key (.env)', key: 'dev-key', created_at: iso(30 * DAY), last_used_at: iso(2 * DAY), disabled: false },
       { id: 'k_old', name: 'Old laptop, Claude Desktop with a long name', key: newKey(), created_at: iso(9 * DAY), last_used_at: null, disabled: true },
@@ -202,7 +257,7 @@ const users = [
   }),
   newUser('u_sam', 'sam@example.com', { created_at: iso(3 * DAY), last_seen_at: iso(3 * DAY) }),
   newUser('u_riya', 'riya@example.com', { created_at: iso(5 * DAY), last_seen_at: iso(20 * MIN), profile: newProfile({ name: 'Riya Shah', callback_number: '+14085550164', voice: 'Marin' }),
-    providers: { twilio: { hint: 'AC...91f2', from_number: '+14085550190', checked_at: iso(4 * DAY) }, openai: { hint: 'sk...Zq4A', checked_at: iso(4 * DAY) }, deepgram: null, fish: null },
+    providers: { twilio: { hint: 'AC...91f2', from_number: '+14085550190', checked_at: iso(4 * DAY) }, openai: { hint: 'sk...Zq4A', checked_at: iso(4 * DAY) }, deepgram: null, fish: null, llm: null },
     calls: [base('c_r1', { business: 'Lakeside Dental', number: '+14085550111', status: 'completed', phase: null, finished: true, created_at: iso(2 * DAY), ended_at: iso(2 * DAY - 190_000), talk_seconds: 190, calling_number: '+14085550190',
       goal: 'Move my cleaning from Thursday to any afternoon next week.', outcome: { result: 'done', summary: 'The cleaning is moved to Tuesday at 2:30 PM with the same hygienist.', details: { new_time: 'Tuesday 2:30 PM' } } })] }),
   newUser('u_long', 'alexandra.konstantinopoulou-whitfield@longdomain-example.org', {
@@ -267,7 +322,7 @@ async function auth(req, res, p) {
   if (p === '/api/auth/me') {
     const u = sessionUser(req);
     const on = !!u && !u.disabled;
-    return send(res, 200, { signed_in: on, email: on ? u.email : null, mail_ready: mailReady, is_admin: on && u.email === OWNER_EMAIL, signups_open: signupsOpen, first_run: on && !u.profile.name });
+    return send(res, 200, { signed_in: on, email: on ? u.email : null, mail_ready: mailReady, is_admin: on && u.email === OWNER_EMAIL, signups_open: signupsOpen, first_run: on && !u.profile.name, demo: demoOn });
   }
   if (p === '/api/auth/request' && req.method === 'POST') {
     const email = String((await readBody(req)).email ?? '').trim().toLowerCase();
@@ -377,7 +432,7 @@ async function providerRoutes(req, res, p, u) {
   if (p === '/api/providers' && m === 'GET') return send(res, 200, providersView(u));
   const name = p.split('/')[3];
   if (!PROVIDERS.includes(name)) return send(res, 404, { detail: 'Not found' });
-  if (m === 'DELETE') { u.providers[name] = null; return send(res, 200, providersView(u)); }
+  if (m === 'DELETE') { u.providers[name] = null; if (name === 'llm' && u.profile.ai_model === 'custom') u.profile.ai_model = 'gpt-6-luna'; return send(res, 200, providersView(u)); }
   if (m !== 'PUT') return send(res, 404, { detail: 'Not found' });
   if (!canSave) return send(res, 409, { detail: 'Key saving is off on this server.' });
   const b = await readBody(req);
@@ -389,6 +444,13 @@ async function providerRoutes(req, res, p, u) {
     if (d.length < 10 || d.length > 11) return send(res, 400, { detail: 'Enter the Twilio phone number that places the calls, like +14155550123.', field: 'from_number' });
     if (d.endsWith('0000')) return send(res, 400, { detail: 'This number is not a voice number in that Twilio account.', field: 'from_number' });
     u.providers.twilio = { hint: hint(sid), from_number: `+1${d.slice(-10)}`, checked_at: iso(0) };
+  } else if (name === 'llm') {
+    const base = String(b.base_url ?? '').trim().replace(/\/$/, ''), key = String(b.api_key ?? '').trim(), model = String(b.model ?? '').trim();
+    if (!/^https?:\/\/.{4,}/.test(base)) return send(res, 400, { detail: "enter the service's address, starting with https://", field: 'base_url' });
+    if (!anyHost && !Object.values(LLM_SERVICES).includes(base)) return send(res, 400, { detail: `this server only allows these services: ${Object.keys(LLM_SERVICES).join(', ')}. On your own server, LLM_ANY_HOST=1 allows any address`, field: 'base_url' });
+    if (key.length < 8 || /bad/i.test(key)) return send(res, 400, { detail: 'the service does not accept this key', field: 'api_key' });
+    if (!model || /nope/i.test(model)) return send(res, 400, { detail: 'the service refused the test request (404). The model does not exist.', field: 'model' });
+    u.providers.llm = { hint: hint(key), checked_at: iso(0), base_url: base, model };
   } else {
     const key = String(b.api_key ?? '').trim();
     const who = { openai: 'OpenAI', deepgram: 'Deepgram', fish: 'Fish Audio' }[name];
@@ -441,7 +503,7 @@ async function api(req, res, p, q) {
   const { user: u, kind: who } = cred;
   const { profile, calls } = u;
   // As the server: keys, push, admin and the audio ticket (it lets its holder hear and speak on a call) need a console session.
-  const ownerOnly = p.startsWith('/api/keys') || p.startsWith('/api/push/') || p.startsWith('/api/admin/') || p.endsWith('/audio-ticket') || p.startsWith('/api/providers') || p.startsWith('/api/oauth/') || p === '/api/account';
+  const ownerOnly = p.startsWith('/api/keys') || p.startsWith('/api/push/') || p.startsWith('/api/admin/') || p.endsWith('/audio-ticket') || p.startsWith('/api/providers') || p.startsWith('/api/oauth/') || p === '/api/account' || p.startsWith('/api/secrets') || p.endsWith('/secret');
   if (who === 'agent' && ownerOnly) return send(res, 403, { error: 'agent keys cannot use this; sign in to the console', code: 'owner_only' });
   const origin = req.headers.origin;
   if (who === 'owner' && req.method !== 'GET' && origin && origin !== `http://localhost:${PORT}`) return send(res, 403, { detail: 'Wrong origin.' });
@@ -460,12 +522,33 @@ async function api(req, res, p, q) {
     res.setHeader('set-cookie', 'ce_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0');
     return send(res, 204);
   }
-  if (p === '/api/config') return send(res, 200, { app_name: 'CallEnvoy', mcp_url: 'https://callenvoy.pragnyalabs.com/mcp', demo: DEMO,
+  if (p.startsWith('/api/secrets')) {
+    if (m === 'GET') return send(res, 200, secretsView(u));
+    if (m === 'POST') {
+      const b = await readBody(req);
+      const label = String(b.label ?? '').trim().replace(/\s+/g, ' '), value = String(b.value ?? '').trim();
+      if (!canSave) return send(res, 400, { detail: 'saving is off on this server (CALLENVOY_SECRET_KEY is not set)' });
+      if (!/^[A-Za-z0-9][A-Za-z0-9 ._/#-]{0,39}$/.test(label)) return send(res, 400, { detail: 'a label is 1 to 40 letters, digits and spaces, like "SSN" or "Account PIN"', field: 'label' });
+      if (!value || value.length > 200) return send(res, 400, { detail: 'a value is 1 to 200 characters', field: 'value' });
+      await sleep(400);
+      const old = u.secrets.find((x) => x.label.toLowerCase() === label.toLowerCase());
+      const hint = value.length >= 6 ? `ends in ${value.slice(-2)}` : 'saved';
+      if (old) old.hint = hint; else u.secrets.push({ label, hint, created_at: iso(0) });
+      return send(res, 201, secretsView(u));
+    }
+    const label = decodeURIComponent(p.split('/')[3] ?? '').toLowerCase();
+    const at = u.secrets.findIndex((x) => x.label.toLowerCase() === label);
+    if (m !== 'DELETE' || at < 0) return send(res, 404, { detail: 'no protected detail with that label' });
+    u.secrets.splice(at, 1);
+    return send(res, 200, secretsView(u));
+  }
+  if (p === '/api/config') return send(res, 200, { app_name: 'CallEnvoy', mcp_url: 'https://callenvoy.pragnyalabs.com/mcp', demo: demoOn ? DEMO : null,
+    ai_models: [...AI_MODELS, ...(u.providers.llm ? [{ id: 'custom', about: `your own service: ${u.providers.llm.model}`, price: null }] : [])], prices: PRICES,
     voices: voiceProvider(u) === 'fish' ? VOICES : OPENAI_VOICES, voice_provider: voiceProvider(u), hearing: hearing(u), keys: keysState(u),
     limits: { max_call_minutes: 120, max_concurrent_calls: 2, daily_minute_cap: DAILY_MINUTE_CAP, // per user; minutes_used_today is the same number, kept for older consoles
       minutes_used_today: minutes(calls.filter((c) => isToday(c.created_at))), my_minutes_today: minutes(calls.filter((c) => isToday(c.created_at))) },
     defaults: Object.fromEntries(Object.keys(profile).map((k) => [k, null])), // not used by the console
-    choices: { caller_id: ['callenvoy', 'own'], mode: ['handle', 'transfer'], reach: ['app', 'phone', 'app_then_phone'], no_answer: ['ai_handles', 'end_politely'] },
+    choices: { ai_model: [...AI_MODELS.map((x) => x.id), 'custom'], caller_id: ['callenvoy', 'own'], mode: ['handle', 'transfer'], reach: ['app', 'phone', 'app_then_phone'], no_answer: ['ai_handles', 'end_politely'] },
     ranges: RANGES, text_limits: TEXT_LIMITS, vapid_public_key: 'BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuBkr3qBUYIHBQFLXYp5Nksh8U' });
   if (p === '/api/profile' && m === 'GET') return send(res, 200, profile);
   if (p === '/api/profile' && m === 'PUT') {
@@ -486,13 +569,13 @@ async function api(req, res, p, q) {
   }
   if (p === '/api/push/test') return send(res, 200, { sent: 2 });
   if (p === '/api/push/subscriptions') return send(res, 200, { ok: true });
-  if (p === '/api/calls' && m === 'GET') return send(res, 200, calls.map((c) => ({ ...live(c), transcript: undefined })));
+  if (p === '/api/calls' && m === 'GET') return send(res, 200, calls.map((c) => ({ ...callView(live(c)), transcript: undefined })));
   if (p === '/api/calls' && m === 'POST') {
     const b = await readBody(req);
     if (!profile.name) return send(res, 400, { detail: 'Set your name first (Settings, or callenvoy_save_profile): the AI says who it calls for.' });
     if (!keysReady(u)) { // without own keys: only the demo line, a few times
       const to = String(b.to ?? '').replace(/\D/g, '');
-      if (!DEMO.number.endsWith(to.slice(-10)) || to.length < 10) return send(res, 403, { detail: 'Real numbers need your own Twilio and OpenAI keys. Add them in Settings, or call the demo line.', field: 'keys', code: 'keys_needed' });
+      if (!demoOn || !DEMO.number.endsWith(to.slice(-10)) || to.length < 10) return send(res, 403, { detail: 'Real numbers need your own Twilio and OpenAI keys. Add them in Settings, or call the demo line.', field: 'keys', code: 'keys_needed' });
       if (u.demoCalls >= DEMO_CALLS) return send(res, 429, { detail: 'You have used your free demo calls. Add your own Twilio and OpenAI keys to place more calls.', field: 'keys', code: 'demo_limit' });
       u.demoCalls += 1;
     }
@@ -501,7 +584,10 @@ async function api(req, res, p, q) {
     if (/busy/i.test(b.goal ?? '')) return send(res, 429, { error: 'The service is busy with other calls. Try again in a few minutes.', code: 'service_busy' });
     if (b.reach === 'phone' && b.mode === 'transfer' && !profile.callback_number) return send(res, 400, { detail: 'Transfer by phone needs a callback number. Add one in Settings, or choose App.', field: 'reach' });
     const id = `c_${crypto.randomBytes(4).toString('hex')}`;
-    calls.unshift(base(id, { ...b, number: b.to, status: 'queued', phase: null, created_at: iso(0), placedAt: Date.now(), recorded: b.record ?? true,
+    const allow = Array.isArray(b.allow_secrets) && who === 'owner' ? b.allow_secrets : []; // counts only from the console
+    const unknown = allow.find((l) => !u.secrets.some((x) => x.label.toLowerCase() === String(l).toLowerCase()));
+    if (unknown) return send(res, 400, { detail: `no protected detail named ${unknown}`, field: 'allow_secrets' });
+    calls.unshift(base(id, { ...b, allow_secrets: undefined, secrets_allowed: allow, number: b.to, status: 'queued', phase: null, created_at: iso(0), placedAt: Date.now(), recorded: b.record ?? true,
       calling_number: b.from === 'own' && b.to !== DEMO.number ? profile.callback_number : '+19186021019', /* the demo line answers only the CallEnvoy number */ transcript: [line(0, 0, 'event', `Dialing ${b.to}`)] }));
     return send(res, 200, { id });
   }
@@ -513,12 +599,34 @@ async function api(req, res, p, q) {
     if (Number(q.get('wait_seconds')) > 0 && !c.finished) await sleep(2000); // a short stand-in for the long-poll
     const since = Number(q.get('since_line') ?? 0);
     live(c);
-    return send(res, 200, { ...c, transcript: c.transcript.filter((l) => l.n >= since) });
+    return send(res, 200, { ...callView(c), transcript: c.transcript.filter((l) => l.n >= since) });
   }
   const ok = (message) => send(res, 200, { ok: true, message });
   switch (cm?.[2]) {
     case 'hang-up': sockets.get(c.id)?.end('ended'); Object.assign(c, { finished: true, status: 'completed', phase: null, ended_at: iso(0), outcome: { result: 'not_done', summary: 'You hung up the call.', details: {} } }); c.owner.state = 'none'; return ok('Hung up.');
     case 'answer': { const b = await readBody(req); const qn = c.open_questions.find((x) => x.id === b.question_id); if (qn) { c.open_questions = c.open_questions.filter((x) => x !== qn); c.answered_questions.push({ ...qn, answer: b.answer }); c.transcript.push(line(c.transcript.length, 0, 'event', 'owner answered')); } return ok('Sent.'); }
+    case 'secret': { // the user's answer about a protected detail (console only)
+      const b = await readBody(req); const qn = c.open_questions.find((x) => x.id === b.question_id && x.kind);
+      if (c.finished) return send(res, 409, { detail: 'the call has ended' });
+      if (!qn) return send(res, 404, { detail: `no such request ${b.question_id} on this call`, field: 'question_id' });
+      if (b.allow && qn.kind === 'secret' && !String(b.value ?? '').trim()) return send(res, 400, { detail: 'type the value (1 to 200 characters)', field: 'value' });
+      await sleep(500);
+      const said = b.allow ? (qn.kind === 'secret' ? 'given for this call (not stored)' : 'allowed') : 'not allowed';
+      c.open_questions = c.open_questions.filter((x) => x !== qn); c.answered_questions.push({ ...qn, answer: said });
+      if (b.allow && qn.kind === 'permission') c.secrets_allowed = [...(c.secrets_allowed ?? []), qn.label];
+      c.transcript.push(line(c.transcript.length, 0, 'event', `${qn.label}: ${said}`));
+      if (b.allow) c.transcript.push(line(c.transcript.length, 0, 'event', `gave ${qn.label} by voice`));
+      return send(res, 200, { ok: true, question_id: qn.id, answer: said });
+    }
+    case 'mode': { // a live call's mode and its "alert me" switch
+      const b = await readBody(req);
+      if (c.finished) return send(res, 409, { detail: 'the call has ended' });
+      if (b.mode != null && !['handle', 'transfer'].includes(b.mode)) return send(res, 400, { detail: 'mode must be "handle" or "transfer"', field: 'mode' });
+      await sleep(300);
+      if (b.mode && b.mode !== c.mode) { c.mode = b.mode; c.transcript.push(line(c.transcript.length, 0, 'event', b.mode === 'transfer' ? 'changed: bring me on when a person answers' : 'changed: the AI handles the call')); }
+      if (typeof b.alert_on_human === 'boolean') c.alert_on_human = b.alert_on_human;
+      return send(res, 200, { ...callView(live(c)), transcript: undefined });
+    }
     case 'connect': c.pending = false; /* an open browser socket stays open */ c.owner = { ...c.owner, state: 'ringing', via: 'phone', alert_until: null }; c.transcript.push(line(c.transcript.length, 0, 'event', 'ringing owner')); return ok('Ringing.');
     case 'hand-back': c.owner = { ...c.owner, state: 'none', via: null }; c.phase = 'talking'; c.transcript.push(line(c.transcript.length, 0, 'event', 'owner handed the call back')); return ok('Handed back.');
     case 'audio-ticket': { const t = crypto.randomBytes(16).toString('hex'); tickets.add(`${c.id}:${t}`); return send(res, 200, { ticket: t, expires_in: 30 }); }
@@ -595,6 +703,12 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(302, { location: '/' });
     return res.end();
   }
+  if (url.pathname === '/__mock/frame') {
+    const n = (k, d) => Number(url.searchParams.get(k)) || d, path = url.searchParams.get('path') ?? '/';
+    if (!path.startsWith('/') || path.startsWith('//')) return send(res, 400, { detail: 'path must start with one /' }); // this server's pages only
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+    return res.end(`<!doctype html><body style="margin:0"><iframe src="${path.replace(/[<>"&]/g, '')}" style="border:0;display:block;margin:0 auto;width:${n('w', 390)}px;height:${n('h', 844)}px"></iframe>`);
+  }
   if (url.pathname === '/__mock/last-link') return send(res, 200, { url: lastLink });
   if (url.pathname === '/__mock/mail') { mailReady = url.searchParams.get('ready') !== '0'; return send(res, 200, { mail_ready: mailReady }); }
   if (url.pathname === '/__mock/expire') { sessions.clear(); return send(res, 200, { ok: true }); }
@@ -609,6 +723,8 @@ const server = http.createServer(async (req, res) => {
     const u = userByEmail(`${url.searchParams.get('as') ?? 'dana'}@example.com`); if (!u) return send(res, 404, {});
     u.calls = url.searchParams.get('set') === 'empty' ? [] : sampleCalls(); return send(res, 200, { calls: u.calls.length });
   }
+  if (url.pathname === '/__mock/demo') { demoOn = url.searchParams.get('on') !== '0'; return send(res, 200, { demo: demoOn }); }
+  if (url.pathname === '/__mock/anyhost') { anyHost = url.searchParams.get('on') === '1'; return send(res, 200, { any_host: anyHost }); }
   if (url.pathname === '/__mock/keys') { canSave = url.searchParams.get('can_save') !== '0'; return send(res, 200, { can_save: canSave }); }
   if (url.pathname === '/__mock/oauth-done') {
     res.writeHead(200, { 'content-type': 'text/html' });

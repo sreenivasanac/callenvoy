@@ -3,8 +3,8 @@
 // and never shown again: the page only gets a hint such as "AC...a3a8".
 import { useCallback, useEffect, useState } from 'react';
 import { Linking, StyleSheet, Text, View } from 'react-native';
-import { api, ApiError, type ProviderName, type Providers } from '../api';
-import { ago, phone } from '../format';
+import { api, ApiError, type ProviderKey, type ProviderName, type Providers } from '../api';
+import { ago, phone, sentence } from '../format';
 import { useSettings } from '../hooks';
 import { border, color, font, space } from '../theme';
 import { Loading } from './Loading';
@@ -71,7 +71,7 @@ const INFO: Info[] = [
 ];
 const CHECKING: Record<ProviderName, string> = { twilio: 'Checking with Twilio...', openai: 'Checking with OpenAI...', deepgram: 'Checking with Deepgram...', fish: 'Checking with Fish Audio...', llm: 'Sending a test request to the service...' };
 const OTHER = 'Other address';
-const NOT_SAVED = { saved: false, hint: null, checked_at: null };
+const NOT_SAVED: ProviderKey = { saved: false, hint: null, checked_at: null };
 
 /** The provider keys of the signed-in user. `changed` also reloads the console's config (voices, what can be called). */
 export function useProviders() {
@@ -92,6 +92,7 @@ export function useProviders() {
 
 export function ProviderKeysCard({ id }: { id?: string }) {
   const { state, error, load, changed } = useProviders();
+  const demo = !!useSettings().config?.demo; // most self-hosted servers have no demo line
   return (
     <Card label="Provider keys" id={id}>
       <Stack>
@@ -109,14 +110,14 @@ export function ProviderKeysCard({ id }: { id?: string }) {
           <>
             {!state.can_save ? (
               <Note kind="warn" title="Key saving is off on this server">
-                The server has no encryption key, so it cannot store provider keys. The demo line still works. If this is your server, set CALLENVOY_SECRET_KEY in its .env file.
+                The server has no encryption key, so it cannot store provider keys.{demo ? ' The demo line still works.' : ''} If this is your server, set CALLENVOY_SECRET_KEY in its .env file.
               </Note>
             ) : state.ready ? (
               <Note kind="saved" title="You can call real numbers">{PROVIDER_COST}</Note>
             ) : (
               <Note kind="hint">
                 <Text style={[text.base, s.strong]}>Add Twilio and OpenAI to call real numbers.</Text>
-                <Text style={text.base}>{PROVIDER_COST} Until then you can call the demo line.</Text>
+                <Text style={text.base}>{`${PROVIDER_COST}${demo ? ' Until then you can call the demo line.' : ''}`}</Text>
               </Note>
             )}
             <View>
@@ -166,7 +167,7 @@ function ProviderRow({ info, state, onChange }: { info: Info; state: Providers; 
       close();
     } catch (e) {
       const field = e instanceof ApiError && e.field && (info.fields.some((f) => f.key === e.field) || (services && e.field === 'base_url')) ? e.field : 'form';
-      setErrors({ [field]: (e as Error).message });
+      setErrors({ [field]: sentence((e as Error).message) });
     }
     setBusy(null);
   };
