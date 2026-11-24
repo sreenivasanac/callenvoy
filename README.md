@@ -6,6 +6,13 @@ An AI that makes your phone calls. Your AI agent (Claude Code, Codex, Claude Des
 - **Your keys, your bill:** real calls run on your own Twilio and OpenAI accounts. You save the keys once in the console. A call costs about 3 to 7 cents a minute, paid to them; CallEnvoy charges nothing.
 - **Open source (MIT).** Run your own copy: see [Run your own](#run-your-own).
 
+![The live call page: transcript, call line, listen and join](docs/screenshots/call-live.png)
+
+| | |
+|---|---|
+| ![Calls with goal status, length and cost](docs/screenshots/calls.png) | ![A finished call: how it went](docs/screenshots/call-done.png) |
+| ![Provider keys](docs/screenshots/settings-keys.png) | ![New call](docs/screenshots/new-call.png) |
+
 The design and the MCP tool names follow [Call4me](https://github.com/skeptrunedev/call4me) (MIT) where that fits. Thank you to its author.
 
 ## How it works
@@ -43,7 +50,9 @@ claude mcp add --scope user --transport http callenvoy https://callenvoy.pragnya
 
 Clients that cannot send headers use `https://callenvoy.pragnyalabs.com/mcp/<key>`. Prefer the header form: a key in a URL can end up in logs.
 
-Tools (prefix `callenvoy_`): `place_call`, `get_call`, `hang_up`, `list_calls`, `answer_question`, `connect_me`, `hand_back`, `get_recordings`, `get_profile`, `save_profile`, `list_voices`, `verify_number`.
+Tools (prefix `callenvoy_`): `place_call`, `get_call`, `hang_up`, `list_calls`, `answer_question`, `connect_me`, `hand_back`, `set_mode`, `get_recordings`, `get_profile`, `save_profile`, `list_voices`, `verify_number`.
+
+When you have not saved how calls should be handled, the agent asks before it dials: shall the AI do the whole call, or bring you on when a person answers? You can switch that on the call's page while the call runs.
 
 ## Your own keys
 
@@ -53,13 +62,59 @@ Tools (prefix `callenvoy_`): `place_call`, `get_call`, `hang_up`, `list_calls`, 
 | OpenAI | yes | The AI that talks; also hearing and voice unless you add the two below | https://platform.openai.com/api-keys |
 | Deepgram | optional | Hearing (speech-to-text) | https://console.deepgram.com |
 | Fish Audio | optional | Ten more voices, three of them Indian English | https://fish.audio/app/api-keys |
+| Another AI service | optional | The model that does the talking, from any OpenAI-compatible service (Google Gemini, OpenRouter, Groq, and others) | that service |
 
 - Save them in the console under **Settings > Provider keys**. Each key is checked with its provider, stored encrypted, and never shown again (only a short hint such as `AC…a3a8`). An agent key cannot read or change them.
 - The voice follows the saved keys: with a Fish key the call speaks with a Fish voice, without one with an OpenAI voice. The same holds for Deepgram and hearing.
-- Without your own keys you can place 3 short calls to the demo line (a made-up internet provider with a phone menu, a hold and a billing agent). Those run on the server's keys and cannot ring a phone.
+- Without your own keys you can place 3 short calls to the demo line (a made-up internet provider with a phone menu, a hold and a billing agent), if the server has one. Those run on the server's keys and cannot ring a phone.
 - A required key cannot be replaced or removed while a call on it is running. Recordings stay in the Twilio account that made the call: after you switch to another Twilio account, a recording that was never played here can no longer be fetched.
 - A Twilio trial account plays a trial message and calls only numbers you verified; upgrade it for real calls.
 - Callbacks: set your Twilio number's voice webhook to the address shown under Provider keys. A business that calls back is then forwarded to your callback number, and the call shows in your list.
+
+## What a call costs, and the AI model
+
+Each finished call shows an estimate of what it cost on your accounts, by part: phone line, hearing, AI model, voice. It is worked out from what the call used (minutes, tokens, spoken characters) and the list prices in `callenvoy/config.py`. Your providers bill you; CallEnvoy bills nothing.
+
+A typical two-minute call with the default model costs about 8 cents, and nearly all of it is the phone line:
+
+| Part | About | Note |
+|---|---|---|
+| Phone line (Twilio: minutes, audio stream, recording) | 2 cents a started minute | the largest part |
+| Hearing (Deepgram or OpenAI) | 0.6 to 0.8 cents a minute | |
+| AI model | under 0.1 cent a call with `gpt-6-luna` | about 10 times that with `gpt-6.1-terra` |
+| Voice (Fish Audio or OpenAI) | about 1.5 cents per 1,000 spoken characters | nothing while on hold |
+
+Choose the model in **Settings > AI model** (`ai_model`):
+
+| Model | When |
+|---|---|
+| `gpt-6-luna` (default) | Fast and the cheapest. Handles the demo line's menu, hold and talk. |
+| `gpt-6.1-terra` | Stronger and more careful, about 10 times the price of luna (still small next to the phone line). |
+| `gpt-4.1` | The earlier default. OpenAI ends it on January 14, 2027. |
+| `custom` | Your own service, once saved under Provider keys > Another AI service. |
+
+Not every model can run a phone call: it has to call tools to press keys and to stay silent on hold. A weaker model pressed a key when a person answered and then went quiet. Try a new model on the demo line first. On a shared server only well-known services can be saved as "another AI service", because the server sends each call's text to that address; your own server can allow any address, such as a local model, with `LLM_ANY_HOST=1`.
+
+## How a call is graded
+
+After every call one request reads the whole transcript and writes the outcome, so the AI does not grade itself:
+
+- **Goal:** done, partly done, not done, voicemail, or no person reached, with a summary that names anything that differs from the goal, the facts worth keeping (a reference number), and what to do next.
+- **Measures:** length, time until a person answered, keys pressed, questions it asked you, who ended the call.
+
+These show in the call list, on the call's page, and in `callenvoy_get_call` (`outcome`, `evals`, `cost`).
+
+## Protected details (SSN, PIN, card number)
+
+Some calls need a secret. CallEnvoy keeps it away from the AI model:
+
+- Save it once under **Settings > Protected details**. It is stored encrypted, and only its label ("SSN") is ever shown again.
+- A call may use one only if you allow it for that call: tick it when you place the call in the console, or answer the request on the call's page when the business asks. An agent can neither allow one nor read one.
+- When the business asks, the AI calls a tool with the label. The server then says the value (a separate text-to-speech request, straight into the call) or keys it in. The value never enters the model's context, the transcript, the log or anything an agent reads.
+- If the other side reads it back, it is masked (`[SSN]`) before the model or the transcript gets the words. The recording pauses while it is said.
+- A detail you did not save can be typed on the call's page when asked. It is used for that call and not stored.
+
+What still receives it: the voice provider gets the text in order to speak it, Twilio gets digits that are keyed in, and the business hears it. That is the least a phone call allows.
 
 ## Two call modes
 
@@ -78,7 +133,7 @@ Sound and browser notification while the console is open; web push when it is cl
 
 ## Settings
 
-All settings have defaults, and you can change them in the console and with `callenvoy_save_profile`; most also per call. Main ones: `mode`, `reach` (`app`, `phone`, `app_then_phone`), `alert_wait_seconds`, `no_answer`, `alert_on_human`, `listen_in`, `voice`, `record_calls`, `max_minutes`, `caller_id` (`callenvoy`: your Twilio number, or `own`: your verified personal number), `leave_voicemail`, and the calling profile (name, callback number, address, insurance, vehicle, travel numbers, free text). The saved profile is used only on calls placed for you, not on a call you place for someone else. Safety limits are constants in `callenvoy/config.py` and cannot be changed through MCP.
+All settings have defaults, and you can change them in the console and with `callenvoy_save_profile`; most also per call. Main ones: `mode`, `reach` (`app`, `phone`, `app_then_phone`), `alert_wait_seconds`, `no_answer`, `alert_on_human`, `listen_in`, `voice`, `ai_model`, `timezone` (so the AI knows today's date), `record_calls`, `max_minutes`, `caller_id` (`callenvoy`: your Twilio number, or `own`: your verified personal number), `leave_voicemail`, and the calling profile (name, callback number, address, insurance, vehicle, travel numbers, free text). The saved profile is used only on calls placed for you, not on a call you place for someone else. Safety limits are constants in `callenvoy/config.py` and cannot be changed through MCP.
 
 ## Voices
 
@@ -93,7 +148,8 @@ All settings have defaults, and you can change them in the console and with `cal
 
 - US and Canada numbers only; premium and non-US/Canada area codes are blocked. No emergency numbers.
 - Per user: 2 calls at one time and 240 call minutes a day. 30 minutes planned per call (extended on hold or in a live talk), 120 at most. The server as a whole runs 4 calls at one time.
-- The AI says it calls on your behalf. It does not claim to be you, and it says it is an AI when sincerely asked.
+- The AI says it calls on your behalf. It does not claim to be you, and it says it is an AI when sincerely asked. If the other side would rather not talk to an AI, it thanks them and ends the call.
+- Dead lines end by themselves: an answered call with no sound at all is hung up after 75 seconds, a hold that has been silent for 10 minutes gets no more time, and when both sides go quiet mid-call the AI is prompted to speak or keep waiting.
 - Calls are recorded by default (a setting). Some US states require all parties to agree to a recording; that is the duty of the user who places the call.
 - Do not use it for spam, harassment or robocalls. The admin can disable an account.
 
@@ -106,13 +162,15 @@ All settings have defaults, and you can change them in the console and with `cal
 
 ## Run your own
 
-You need a Linux server with a public https address, `uv`, and nginx; Node 22.13+ and `pnpm` on the machine that builds the console.
+CallEnvoy is free and open source (MIT). With Docker it is three steps on a server that has a host name:
 
-1. Copy `.env.example` to `.env` on the server (mode 600) and fill it in: the public address, the server's own provider keys (they serve the admin and the free demo calls), `OWNER_EMAIL`, mail settings for sign-in links, and `CALLENVOY_SECRET_KEY` (`uv run python -m callenvoy.keys --make-key`), which encrypts the keys that users save. Keep that value: without it saved keys cannot be read.
-2. Install `deploy/callenvoy.service` as a systemd unit and `deploy/nginx.conf` as an nginx site (WebSocket upgrade and `X-Forwarded-For` matter).
-3. Run `deploy/deploy.sh <ssh-host>`. It builds the console, copies the code and `client/dist`, runs `uv sync`, restarts the unit and checks `/healthz`.
-4. In Twilio, set the voice webhook of the server's number to `<address>/twilio/inbound`. For the demo line, buy a second number, set its voice webhook to `<address>/api/demo-line`, and put it in `DEMO_LINE_NUMBER` in `callenvoy/config.py`.
-5. First sign-in without mail, or recovery: `uv run python -m callenvoy.signin [email]` prints a one-time link.
+```bash
+git clone https://github.com/sreenivasanac/callenvoy.git && cd callenvoy
+cp .env.example .env    # set DOMAIN, OWNER_EMAIL, your Twilio and OpenAI keys, CALLENVOY_SECRET_KEY
+docker compose up -d --build
+```
+
+The web server in front gets the HTTPS certificate by itself. The full guide, with the Twilio set-up, the optional demo line, sign-in without mail, updates and backups, is [docs/SELF_HOSTING.md](docs/SELF_HOSTING.md). To report a security problem, see [SECURITY.md](SECURITY.md).
 
 `PUBLIC_BASE_URL` may include a path (`https://example.com/callenvoy`) when the service shares a host; agent sign-in in the browser needs the root of a host, because OAuth discovery addresses are fixed there.
 
@@ -152,7 +210,9 @@ pnpm --dir client test
 
 ## Not built yet
 
-A native mobile app (the console is an Expo project, so screens and logic are shared), native push, SMS alerts, an AI that answers callbacks (callbacks forward to your phone), scheduled calls, numbers outside the US and Canada, and a keypad in the console.
+A native mobile app (the console is an Expo project, so screens and logic are shared), native push, SMS alerts, an AI that answers callbacks (callbacks forward to your phone), scheduled calls, numbers outside the US and Canada, a keypad in the console, and more voice providers with Indian English voices (Smallest, Sarvam, Cartesia).
+
+A speech-to-speech engine (OpenAI GPT-Live-1.1) was tried in November 2026 and left out: dropped into the call pipeline it narrated the call to an imagined listener instead of doing the task, it bills every minute including hold (about 5 cents, against under 1 cent for the default chain), and it has no Indian English voice. It would need its own prompt and call logic.
 
 ## History
 
