@@ -353,3 +353,35 @@ def test_silent_hold_gets_no_more_time():
     assert calls.next_deadline(planned, planned, 0.0, "on_hold", 0, False, planned - 60) == planned + 15 * m  # music plays
     assert calls.next_deadline(planned, planned, 0.0, "on_hold", 0, False, planned - 11 * m) is None  # silent 11 minutes
     assert calls.next_deadline(planned, planned, 0.0, "on_hold", 0, True, planned - 11 * m) == planned + 15 * m  # owner is on
+
+
+def test_quiet_line_nudges_the_ai_once_per_silent_stretch(monkeypatch):
+    """Both sides waiting for each other: after a silent stretch the AI is told once, and again only after sound."""
+    real_sleep = asyncio.sleep
+
+    v = place()
+    cid = v["id"]
+    store.update_call(cid, status="in_progress")
+    told = []
+
+    class Bot:
+        async def tell(self, text, run_llm):
+            told.append(run_llm)
+
+    live = calls.LIVE[cid]
+    live.bot = Bot()
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(calls.time, "monotonic", lambda: clock["now"])
+    live.last_talk = live.last_sound = 1000.0
+
+    async def fast_sleep(seconds):
+        clock["now"] += seconds
+        if clock["now"] == 1060.0:
+            live.last_sound = clock["now"]  # hold music starts: the stretch ends
+        if clock["now"] >= 1130.0:
+            store.update_call(cid, status="completed")
+        await real_sleep(0)
+
+    monkeypatch.setattr(calls.asyncio, "sleep", fast_sleep)
+    run(calls._quiet_watch(cid))
+    assert told == [True, True]  # at 30 s of silence, and once more 30 s after the music stopped

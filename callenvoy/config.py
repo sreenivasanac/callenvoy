@@ -149,6 +149,8 @@ SOUND_RMS = 150  # 16-bit audio quieter than this counts as silence
 SILENT_PICKUP_SECONDS = 6  # answered and nobody speaks: the AI says a short hello once
 DEAD_AIR_SECONDS = 75  # answered and no sound at all since: hang up
 SILENT_HOLD_MINUTES = 10  # on hold with no sound for this long: no more hold extensions
+QUIET_NUDGE_SECONDS = 30  # mid-call, no sound and no words for this long: the AI is asked to act (see calls._quiet_watch)
+QUIET_NUDGES_MAX = 3  # per call
 WRAP_UP_SECONDS = 40  # at the time limit in a live talk the AI gets this long to say goodbye
 
 # List prices in US dollars, read on 2026-11-24 (OpenAI, Twilio, Deepgram and Fish Audio pricing pages).

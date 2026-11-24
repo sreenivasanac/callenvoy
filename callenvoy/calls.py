@@ -787,6 +787,30 @@ async def _dead_line(call_id: str) -> None:
         store.update_call(call_id, outcome_result="no_human", outcome_summary="The call was answered, but there "
                           "was no sound on the line.")
         await stop_call(call_row(call_id))
+        return
+    await _quiet_watch(call_id)
+
+
+QUIET_NOTE = ("The line has been silent for a while. If a person was talking with you, speak now: say why you are "
+              "calling, or repeat your last request. If you are on hold or in a menu, call wait.")
+
+
+async def _quiet_watch(call_id: str) -> None:
+    """A stall breaker. Sometimes both sides wait for each other (the model misread a person as a menu and
+    stayed silent). When the line carries no sound and nobody has said a word for QUIET_NUDGE_SECONDS, the AI is
+    told so once per silent stretch and decides: speak to the person, or keep waiting on a silent hold."""
+    told, nudges = False, 0
+    while nudges < config.QUIET_NUDGES_MAX:
+        await asyncio.sleep(5)
+        live, row = LIVE.get(call_id), store.get_call(call_id)
+        if not live or not row or is_final(row):
+            return
+        quiet = time.monotonic() - max(live.last_sound, live.last_talk)
+        if quiet < config.QUIET_NUDGE_SECONDS:
+            told = False
+        elif not told and live.bot and row["phase"] != "connecting_owner" and owner.view(call_id)["state"] != "on_call":
+            told, nudges = True, nudges + 1
+            await live.bot.tell(QUIET_NOTE, run_llm=True)
 
 
 async def bot_finished(call_id: str, bot=None) -> None:
