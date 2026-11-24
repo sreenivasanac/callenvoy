@@ -1,5 +1,5 @@
 // Display text for calls: labels, numbers, times. Pure functions.
-import type { Call, Line } from './api';
+import type { Call, Cost, Evals, Line } from './api';
 
 export function phone(n: string) {
   const m = /^\+1(\d{3})(\d{3})(\d{4})$/.exec(n);
@@ -10,6 +10,18 @@ export function duration(sec: number) {
   const s = Math.max(0, Math.round(sec));
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 }
+
+/** A dollar amount of a call: "$0.08", and "under 1 cent" for the small parts. */
+export function money(n: number) {
+  return n > 0 && n < 0.005 ? 'under 1 cent' : `$${n.toFixed(2)}`;
+}
+
+/** "about $0.08", or with "+ AI model" when the model's price is not known. */
+export function costText(c: Cost) {
+  return `about ${money(c.total)}${c.complete ? '' : ' + AI model'}`;
+}
+
+export const ENDED_BY: Record<NonNullable<Evals['ended_by']>, string> = { ai: 'The AI', them: 'The other side', you: 'You', time_limit: 'The time limit' };
 
 export function callSeconds(c: Call, now = Date.now()) {
   if (c.talk_seconds != null && c.finished) return c.talk_seconds;

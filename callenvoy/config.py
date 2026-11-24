@@ -275,8 +275,9 @@ DEMO_CALL = {  # GET /api/config "demo": pre-fills a first call to the demo line
 } if DEMO_LINE_NUMBER else None
 
 
-REQUIRED_ENV = ("TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_FROM_NUMBER", "DEEPGRAM_API_KEY",
-                "OPENAI_API_KEY", "FISH_API_KEY")
+# The server's own accounts: a phone line and OpenAI. DEEPGRAM_API_KEY and FISH_API_KEY are optional extras
+# (hearing and voices), as they are for a user: without them OpenAI hears and speaks.
+REQUIRED_ENV = ("TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_FROM_NUMBER", "OPENAI_API_KEY")
 
 
 def dev_mode() -> bool:

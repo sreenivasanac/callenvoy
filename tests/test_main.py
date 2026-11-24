@@ -190,9 +190,9 @@ def test_startup_checks(monkeypatch):
     with pytest.raises(SystemExit, match="PUBLIC_BASE_URL"):
         main.startup_checks()
     monkeypatch.setenv("PUBLIC_BASE_URL", "https://example.com/callenvoy")
-    for name in ("DEEPGRAM_API_KEY", "OPENAI_API_KEY", "FISH_API_KEY"):
+    for name in ("DEEPGRAM_API_KEY", "OPENAI_API_KEY", "FISH_API_KEY", "TWILIO_FROM_NUMBER"):
         monkeypatch.delenv(name)
-    with pytest.raises(SystemExit, match="DEEPGRAM_API_KEY, OPENAI_API_KEY, FISH_API_KEY"):
+    with pytest.raises(SystemExit, match="missing environment variables: TWILIO_FROM_NUMBER, OPENAI_API_KEY$"):
         main.startup_checks()
     monkeypatch.setenv("CALLENVOY_API_KEY", "s3cr3tvalue")
     with pytest.raises(SystemExit, match="CALLENVOY_API_KEY") as e:

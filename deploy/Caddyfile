@@ -1,0 +1,6 @@
+# Caddy for CallEnvoy (docker-compose.yml). It keeps no access log, so an agent key in an /mcp/<key> address
+# is not written anywhere. WebSockets (call audio, Twilio streams) pass through reverse_proxy as they are.
+{$DOMAIN} {
+	encode zstd gzip
+	reverse_proxy callenvoy:3021
+}

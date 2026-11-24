@@ -14,7 +14,22 @@ export type NoAnswer = 'ai_handles' | 'end_politely';
 
 /** `at`: seconds from the start of the recording to the start of the line, or null when not known. */
 export type Line = { n: number; t: string; who: 'them' | 'ai' | 'owner' | 'event'; text: string; at?: number | null };
-export type Question = { id: string; question: string; answer?: string };
+/** `kind`: null is a plain question. "permission" asks whether the call may use a saved protected detail, and
+ *  "secret" asks the user to type one for this call. Only the console can answer those two (answerSecret). */
+export type Question = { id: string; question: string; answer?: string; kind?: 'permission' | 'secret' | null; label?: string | null };
+/** How a call went, counted by the server from the call's own records. */
+export type Evals = {
+  goal: string | null;
+  reached_person: boolean;
+  seconds_to_person: number | null;
+  keys_pressed: number;
+  questions_asked: number;
+  ended_by: 'ai' | 'them' | 'you' | 'time_limit' | null;
+  follow_up: string | null;
+};
+/** An estimate in US dollars from list prices. The user's own providers bill it; CallEnvoy bills nothing.
+ *  `complete: false`: the AI model's price is not known (the user's own service), and `total` leaves it out. */
+export type Cost = { total: number; parts: { phone: number; hearing: number; ai: number | null; voice: number }; complete: boolean; model: string | null };
 
 export type Call = {
   id: string;
@@ -47,6 +62,9 @@ export type Call = {
   next_line?: number;
   // Not in the plan's call shape: the recording links of get_recordings, if the server adds them.
   recordings?: { url: string; duration_seconds: number }[];
+  evals?: Evals;
+  cost?: Cost | null; // null until the call has ended
+  secrets_allowed?: string[]; // labels of protected details this call may use
 };
 
 // Text settings are null when not set.
@@ -55,6 +73,8 @@ export type Settings = {
   callback_number: string | null;
   details: string | null;
   voice: string;
+  ai_model?: string; // one of config.ai_models
+  timezone?: string | null; // IANA name, so the AI knows today's date
   record_calls: boolean;
   max_minutes: number;
   mode: Mode;
@@ -101,9 +121,10 @@ export type HearingProvider = 'deepgram' | 'openai';
  *  server's for the admin). Without that, only the free demo-line calls (`demo_calls_left`). */
 export type KeysState = { ready: boolean; server_keys: boolean; demo_calls_left: number; can_save: boolean };
 
-export type ProviderName = 'twilio' | 'openai' | 'deepgram' | 'fish';
+/** `llm`: another OpenAI-compatible AI service for the talking (optional). */
+export type ProviderName = 'twilio' | 'openai' | 'deepgram' | 'fish' | 'llm';
 /** A saved provider key as shown: never the key, only a hint such as "AC...a3a8". */
-export type ProviderKey = { saved: boolean; hint: string | null; checked_at: string | null; from_number?: string | null };
+export type ProviderKey = { saved: boolean; hint: string | null; checked_at: string | null; from_number?: string | null; note?: string | null; base_url?: string | null; model?: string | null };
 export type Providers = {
   can_save: boolean; // false: the server has no encryption key, so nobody can save keys
   ready: boolean;
@@ -111,8 +132,15 @@ export type Providers = {
   hearing: HearingProvider;
   voice_provider: SpeechProvider;
   inbound_url: string; // the voice webhook for the user's Twilio number (callbacks from a business)
-  providers: Record<ProviderName, ProviderKey>;
+  llm_services?: Record<string, string>; // name -> address of the AI services this server allows
+  llm_any_host?: boolean; // a self-hosted server that allows any address
+  providers: Record<Exclude<ProviderName, 'llm'>, ProviderKey> & { llm?: ProviderKey };
 };
+/** A protected detail as listed: the label and a hint, never the value. */
+export type Secret = { label: string; hint: string; created_at: string };
+export type Secrets = { can_save: boolean; secrets: Secret[] };
+/** `price`: dollars per 1M tokens (input, cached input, output); null when not known. */
+export type AiModel = { id: string; about: string; price: [number, number, number] | null };
 export type TwilioKeys = { account_sid: string; auth_token: string; from_number: string };
 
 export type Config = {
@@ -122,13 +150,14 @@ export type Config = {
   /** Per user. `minutes_used_today` is the same number as `my_minutes_today` (kept for older consoles). */
   limits: { max_call_minutes: number; max_concurrent_calls: number; daily_minute_cap: number; minutes_used_today?: number; my_minutes_today?: number };
   keys?: KeysState;
+  ai_models?: AiModel[];
   voice_provider?: SpeechProvider;
   hearing?: HearingProvider;
   ranges: Record<'max_minutes' | 'alert_wait_seconds' | 'phone_ring_seconds', [number, number]>;
   text_limits: Record<string, number>;
   vapid_public_key: string | null;
-  /** CallEnvoy's own test line, to pre-fill a first call. */
-  demo?: { number: string; business: string; goal: string; facts: string; menu_tips: string };
+  /** The server's own test line, to pre-fill a first call. null: this server has none (most self-hosted ones). */
+  demo?: { number: string; business: string; goal: string; facts: string; menu_tips: string } | null;
 };
 
 /** The place_call fields (the console form sends the same). */
@@ -152,6 +181,8 @@ export type NewCall = {
   record?: boolean;
   from?: CallerId;
   leave_voicemail?: boolean;
+  /** Labels of saved protected details this call may give. Counts only from the console. */
+  allow_secrets?: string[];
 };
 
 export class ApiError extends Error {
@@ -162,8 +193,9 @@ export class ApiError extends Error {
 
 /** An agent key as listed; the full key is only in the answer to createKey. */
 export type ApiKey = { id: string; name: string; prefix: string; created_at: string; last_used_at: string | null; disabled: boolean };
-/** `first_run`: the user has no profile name yet (the console shows the welcome steps). */
-export type AuthMe = { signed_in: boolean; email: string | null; mail_ready: boolean; is_admin: boolean; signups_open: boolean; first_run: boolean };
+/** `first_run`: the user has no profile name yet (the console shows the welcome steps).
+ *  `demo`: this server has a demo line (absent on an older server: then it has one). */
+export type AuthMe = { signed_in: boolean; email: string | null; mail_ready: boolean; is_admin: boolean; signups_open: boolean; first_run: boolean; demo?: boolean };
 /** A user as the admin sees them: usage only. */
 export type AdminUser = {
   id: string;
@@ -253,8 +285,17 @@ export const api = {
   setSignups: (open: boolean) => request<unknown>('PUT', '/api/admin/settings', { signups_open: open }),
   providers: () => request<Providers>('GET', '/api/providers'),
   /** The server checks the key with the provider before it saves; a bad key is a 400 with `field`. */
-  saveProvider: (name: ProviderName, body: TwilioKeys | { api_key: string }) => request<Providers>('PUT', `/api/providers/${name}`, body),
+  saveProvider: (name: ProviderName, body: TwilioKeys | { api_key: string } | { base_url: string; api_key: string; model: string }) =>
+    request<Providers>('PUT', `/api/providers/${name}`, body),
   removeProvider: (name: ProviderName) => request<Providers>('DELETE', `/api/providers/${name}`),
+  secrets: () => request<Secrets>('GET', '/api/secrets'),
+  saveSecret: (label: string, value: string) => request<Secrets>('POST', '/api/secrets', { label, value }),
+  deleteSecret: (label: string) => request<Secrets>('DELETE', `/api/secrets/${encodeURIComponent(label)}`),
+  /** The user's answer about a protected detail on a live call: allow a saved one, or type one (`value`). */
+  answerSecret: (id: string, question_id: string, allow: boolean, value?: string) =>
+    request<unknown>('POST', `/api/calls/${encodeURIComponent(id)}/secret`, { question_id, allow, ...(value != null ? { value } : {}) }),
+  /** Changes a live call's mode or its "alert me" switch. Returns the call without the transcript. */
+  setMode: (id: string, patch: { mode?: Mode; alert_on_human?: boolean }) => request<Call>('POST', `/api/calls/${encodeURIComponent(id)}/mode`, patch),
   deleteAccount: (confirm: string) => request<unknown>('DELETE', '/api/account', { confirm }),
   /** An agent's sign-in request (the /connect page). 404: expired or unknown. */
   oauthRequest: (id: string) => request<{ client_name: string; redirect_host: string }>('GET', `/api/oauth/request/${encodeURIComponent(id)}`),
