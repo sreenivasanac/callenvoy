@@ -640,9 +640,10 @@ class CallBot:
         calls.event(self.call_id, f"gave {label} by voice")
         await asyncio.sleep(seconds)  # it plays before the model speaks again
         await params.result_callback(
-            f"The {label} was just said aloud to them, slowly. Do not say or repeat it yourself. If they read it "
-            f"back, a correct read-back appears to you as [{label}]; any other number they say is wrong, and you "
-            "call give_secret again.")
+            f"The {label} was just said aloud to them, slowly. You cannot say it yourself, so never tell them that "
+            f"you cannot share it: if they ask for it again or did not catch it, call give_secret again. If they "
+            f"read it back, a correct read-back appears to you as [{label}]; any other number they say is wrong, "
+            "and you call give_secret again.")
 
     async def _tool_connect_owner(self, params) -> None:
         if self.owner_has_call:
@@ -677,6 +678,13 @@ class CallBot:
             await params.result_callback(OWNER_HAS_CALL, properties=NO_LLM)
             return
         args = params.arguments
+        live = calls.LIVE.get(self.call_id or "")
+        if live and live.futures:
+            # A backstop for a rule the cheaper models break: no hanging up while the user is being asked.
+            await params.result_callback("You asked the person you call for a question and the answer has not "
+                                         "arrived yet. Do not end the call: tell them you are still checking, and "
+                                         "wait. If no answer comes, you will be told.")
+            return
         if self.call_id:
             save_outcome(self.call_id, args.get("result"), args.get("summary"), args.get("details"))
             calls.event(self.call_id, "AI ended the call")

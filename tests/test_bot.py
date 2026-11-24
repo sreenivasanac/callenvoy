@@ -225,3 +225,23 @@ def test_openai_hearing_holds_audio_until_the_session_is_ready():
         await h._commit_audio_buffer()
         assert sent == ["input_audio_buffer.append", "input_audio_buffer.commit"]
     run(go())
+
+
+def test_the_ai_cannot_hang_up_while_a_question_is_open(make_bot):
+    async def go():
+        v = await calls.place_call(uid(), calls.PlaceCallInput(**CALL))
+        cid = v["id"]
+        b = make_bot(cid)
+        calls.LIVE[cid].bot = b
+        asking = asyncio.create_task(b._tool_ask_user(Params(question="Which address?")))
+        await asyncio.sleep(0.05)
+        p = Params(result="not_done", summary="No address.")
+        await b._tool_end_call(p)
+        assert "Do not end the call" in p.results[0][0] and store.get_call(cid)["outcome_result"] is None
+        q = store.questions(cid)[0]
+        await calls.answer_question(uid(), cid, q["id"], "12 Oak Street")
+        await asyncio.wait_for(asking, 2)
+        p2 = Params(result="done", summary="Fixed.")
+        await b._tool_end_call(p2)  # nothing open any more: the call may end
+        assert store.get_call(cid)["outcome_result"] == "done"
+    run(go())
