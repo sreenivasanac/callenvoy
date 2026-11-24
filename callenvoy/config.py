@@ -20,7 +20,7 @@ APP_NAME = "CallEnvoy"
 # Both come from PUBLIC_BASE_URL, so a new address is one line in .env and no code change.
 BASE_PATH = urlparse(public_base_url()).path.rstrip("/")  # "" at the root of a host
 PUBLIC_ORIGIN = "{0.scheme}://{0.netloc}".format(urlparse(public_base_url()))  # allowed Origin of console writes
-REPO_URL = "https://github.com/sreenivasanac/holdforme"
+REPO_URL = "https://github.com/sreenivasanac/callenvoy"
 TOOL_PREFIX = "callenvoy_"
 ROOT = Path(__file__).resolve().parent.parent
 DB_PATH = ROOT / "data" / "callenvoy.db"
@@ -32,9 +32,16 @@ DEV_ORIGIN = "http://localhost:8081"  # Expo web dev server, allowed only with C
 
 # --- Providers ---
 STT_MODEL = "nova-3-general"
-LLM_MODEL = "gpt-4.1"
-LLM_TEMPERATURE = 0
-SUMMARY_MODEL = "gpt-4.1"
+# AI models a user can pick (setting ai_model). Each one was run on the demo line before it was listed here.
+# `settings`: what the model needs in a chat-completions request with tools (the gpt-6 family refuses tools
+# unless reasoning is off; gpt-4.1 is tuned at temperature 0 and shuts down on 2027-01-14).
+LLM_MODELS = {
+    "gpt-6-luna": {"settings": {"extra": {"reasoning_effort": "none"}}, "about": "fast and the cheapest"},
+    "gpt-6.1-terra": {"settings": {"extra": {"reasoning_effort": "none"}}, "about": "stronger, about 10 times the price"},
+    "gpt-4.1": {"settings": {"temperature": 0}, "about": "the earlier default; OpenAI ends it on January 14, 2027"},
+}
+LLM_MODEL = "gpt-6-luna"  # the default
+RECAP_MODEL = "gpt-6-luna"  # writes the outcome from the whole transcript after the call (always on the OpenAI key)
 TTS_MODEL = "s2.1-pro"
 # End of turn: Pipecat's default (LocalSmartTurnAnalyzerV3). TODO: SpeechTimeoutUserTurnStopStrategy if too slow on 2 vCPUs.
 CALL_SAMPLE_RATE = 8000
@@ -108,7 +115,8 @@ BOT_DONE_GRACE_SECONDS = 30
 KEY_PRESS_REJOIN_SECONDS = 20  # after a key press the call must join its new stream in this time
 DIAL_TIMEOUT_SECONDS = 90  # no answer and no final status from Twilio in this time: the call is closed as failed
 CALLER_ID_CACHE_SECONDS = 60  # GET /api/caller-id caches Twilio's answer this long
-OUTCOMES = ("done", "not_done", "voicemail", "no_human")  # after the bot ends, wait this long for Twilio's final status
+# How a call's goal turned out. partial: some of it was done, or an answer came without the result asked for.
+OUTCOMES = ("done", "partial", "not_done", "voicemail", "no_human")
 RECORD_CALLS_DEFAULT = True
 FINAL_STATUSES = ("completed", "no_answer", "busy", "failed", "canceled")
 LIVE_STATUSES = ("queued", "dialing", "in_progress")
@@ -118,6 +126,23 @@ INBOUND_RING_SECONDS = 25  # forwarded callback rings the user this long
 # A callback is named after the user's newest outbound call to that number in this window.
 INBOUND_BUSINESS_DAYS = 14
 # TODO: SMS alerts (needs Twilio A2P 10DLC registration).
+
+# Dead lines (the line's sound level is watched, so hold music is not taken for silence)
+SOUND_RMS = 150  # 16-bit audio quieter than this counts as silence
+SILENT_PICKUP_SECONDS = 6  # answered and nobody speaks: the AI says a short hello once
+DEAD_AIR_SECONDS = 75  # answered and no sound at all since: hang up
+SILENT_HOLD_MINUTES = 10  # on hold with no sound for this long: no more hold extensions
+WRAP_UP_SECONDS = 40  # at the time limit in a live talk the AI gets this long to say goodbye
+
+# List prices in US dollars, read on 2026-11-24 (OpenAI, Twilio, Deepgram and Fish Audio pricing pages).
+# Used only to show a user an estimate of what a call cost on their own accounts: CallEnvoy bills nothing.
+PRICES = {
+    "twilio_minute": 0.014, "twilio_stream_minute": 0.004, "twilio_recording_minute": 0.0025,
+    "stt_minute": {"deepgram": 0.0077, "openai": 0.006},
+    "tts_1k_chars": {"fish": 0.015, "openai": 0.016},
+    # per 1M tokens: input, cached input, output
+    "llm_1m": {"gpt-6-luna": (0.10, 0.01, 0.50), "gpt-6.1-terra": (1.00, 0.05, 5.00), "gpt-4.1": (2.00, 0.50, 8.00)},
+}
 
 # --- Owner audio ---
 OWNER_DROP_GRACE_SECONDS = 5
@@ -168,11 +193,13 @@ MAX_PUSH_DEVICES = 10
 # --- User settings (section 4a): one list, defaults here, saved values in the profile table ---
 SETTINGS: dict[str, dict] = {
     "name": {"type": "text", "max": 80, "default": None},
+    "timezone": {"type": "text", "max": 60, "default": None},  # IANA name, e.g. America/Los_Angeles (the console sets it)
     "callback_number": {"type": "phone", "default": None},
     "details": {"type": "text", "max": 3000, "default": None},
     "caller_id": {"type": "choice", "choices": ["callenvoy", "own"], "default": "callenvoy"},
     "leave_voicemail": {"type": "bool", "default": True},
     "voice": {"type": "choice", "choices": VOICE_NAMES, "default": DEFAULT_VOICE},
+    "ai_model": {"type": "choice", "choices": list(LLM_MODELS), "default": LLM_MODEL},
     "record_calls": {"type": "bool", "default": RECORD_CALLS_DEFAULT},
     "max_minutes": {"type": "int", "min": 1, "max": MAX_CALL_MINUTES, "default": DEFAULT_CALL_MINUTES},
     "mode": {"type": "choice", "choices": ["handle", "transfer"], "default": "handle"},

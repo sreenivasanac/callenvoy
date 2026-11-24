@@ -34,7 +34,7 @@ export default function TermsScreen() {
         ['Recordings', ['Calls are recorded unless you turn that off. Where the law requires everyone on a call to agree to a recording, getting that agreement is your responsibility.']],
         ['If the rules are broken', ['An account that breaks these rules can be disabled or removed.']],
         ['Liability', ['To the extent the law allows, the person who runs this service is not liable for damages that come from using it, including charges at your providers and the results of calls.']],
-        ['Contact', ['The issues page of the project: https://github.com/sreenivasanac/holdforme/issues']],
+        ['Contact', ['The issues page of the project: https://github.com/sreenivasanac/callenvoy/issues']],
       ]}
     />
   );

@@ -52,7 +52,7 @@ export default function PrivacyScreen() {
             'Recordings that Twilio holds are not deleted from Twilio by this step. Delete them in your own Twilio account. For a demo call, which runs on the service’s account, ask and it will be deleted.',
           ],
         ],
-        ['Contact', ['Questions and requests go to the issues page of the project: https://github.com/sreenivasanac/holdforme/issues']],
+        ['Contact', ['Questions and requests go to the issues page of the project: https://github.com/sreenivasanac/callenvoy/issues']],
       ]}
     />
   );

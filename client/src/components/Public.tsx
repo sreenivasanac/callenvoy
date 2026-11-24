@@ -9,7 +9,7 @@ import { AppBar, BarLink } from './TopBar';
 import { track } from '../platform/analytics';
 import { Button, T, text, TextLink } from './ui';
 
-export const REPO_URL = 'https://github.com/sreenivasanac/holdforme';
+export const REPO_URL = 'https://github.com/sreenivasanac/callenvoy';
 const open = (url: string) => void Linking.openURL(url);
 
 /** `onSignIn`: what the Sign in button does (the product page scrolls to its form; other pages go there). */

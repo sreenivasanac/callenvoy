@@ -46,3 +46,15 @@ def test_profile_fields_only_for_the_owner():
 def test_saved_details_stay_out_of_a_call_for_someone_else():
     p = build_prompt({**BASE, "on_behalf_of": "Sam Lee", "facts": "Sam's account 77"}, PROFILE)
     assert "Account 4411" not in p and "Sam's account 77" in p
+
+
+def test_today_recording_and_outcome_rules():
+    from datetime import datetime, timezone
+
+    from callenvoy.prompt import today
+    at = datetime(2026, 11, 25, 6, 5, tzinfo=timezone.utc)
+    assert today("America/Los_Angeles", at) == "Tuesday, November 24, 2026, 10:05 PM in America/Los_Angeles"
+    assert today(None, at) == today("Not/AZone", at) == "Wednesday, November 25, 2026 (UTC; the local time is not known)"
+    p = build_prompt({**BASE, "record": 1}, {**PROFILE, "timezone": "America/Los_Angeles"})
+    assert "# Today" in p and "America/Los_Angeles" in p and "say yes" in p and "partial" in p
+    assert "you are not recording it" in build_prompt({**BASE, "record": 0}, PROFILE)

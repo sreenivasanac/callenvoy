@@ -16,6 +16,7 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from . import auth, config, demo_line, guard, keys, owner, store, twilio_api
+from . import usage as metering  # (calls.usage is the admin's per-user numbers)
 
 log = logging.getLogger("callenvoy.calls")
 
@@ -94,6 +95,7 @@ class Live:
     tasks: list[asyncio.Task] = field(default_factory=list)  # watchdog, grace timers
     last_them: float = 0.0  # monotonic time of the last line from the other side
     last_talk: float = 0.0  # last line from anyone (them, ai, owner)
+    last_sound: float = 0.0  # monotonic time the line last carried any sound (speech, music, tones)
     answered: float = 0.0  # time.time() of the answer: the recording starts there
 
 
@@ -422,11 +424,32 @@ def view(row: dict, since_line: int = 0, transcript: bool = True) -> dict:
         "talk_seconds": talk, "owner_seconds": row["owner_seconds"] or 0, "error": row["error"],
         "created_at": row["created_at"], "ended_at": row["ended_at"],
         "recordings": recordings(row),
+        "cost": metering.cost(row) if is_final(row) else None,
+        "evals": evals(row, qs),
     }
     if transcript:
         v["transcript"] = [_line_view(line, row["answered_at"]) for line in store.lines(cid, since_line)]
         v["next_line"] = store.next_line(cid)
     return v
+
+
+def evals(row: dict, qs: list[dict]) -> dict:
+    """Plain measures of how a call went, for the call list and for agents. Counted from the call's own
+    records, plus what the after-call recap found (follow_up, reached_person)."""
+    cid = row["id"]
+    events = [l["text"] for l in store.lines(cid) if l["who"] == "event"]
+    found = json.loads(row["evals"]) if row.get("evals") else {}
+    to_person = None
+    if row["human_at"] and row["answered_at"]:
+        to_person = max(0, int((_ts(row["human_at"]) - _ts(row["answered_at"])).total_seconds()))
+    ended_by = None
+    if is_final(row):
+        ended_by = ("time_limit" if any(e.startswith("time limit") for e in events) else
+                    "ai" if "AI ended the call" in events else
+                    "you" if "hang up requested" in events else "them")
+    return {"goal": row["outcome_result"], "reached_person": bool(row["human_at"]) or bool(found.get("reached_person")),
+            "seconds_to_person": to_person, "keys_pressed": sum(e.startswith("pressed ") for e in events),
+            "questions_asked": len(qs), "ended_by": ended_by, "follow_up": found.get("follow_up") or None}
 
 
 async def get_call(user_id: str, call_id: str, wait_seconds: int = 0, since_line: int = 0) -> dict:
@@ -519,6 +542,13 @@ async def ask(call_id: str, question: str) -> str | None:
     except TimeoutError:
         live.futures.pop(qid, None)
         return None
+
+
+def note_sound(call_id: str | None, at: float) -> None:
+    """The bot's ear heard something on the line (at most once a second)."""
+    live = LIVE.get(call_id or "")
+    if live:
+        live.last_sound = at
 
 
 def note_line(call_id: str, who: str) -> None:
@@ -669,7 +699,7 @@ async def _stream_lost(call_id: str, bot) -> None:
             break
     live.moved_from = None
     store.update_call(call_id, ws_token=None)
-    await bot.summary_if_missing()
+    await bot.recap()
     await bot_finished(call_id)
 
 
@@ -733,9 +763,30 @@ async def stream_started(call_id: str, bot) -> None:
         answered(call_id)
         fields["answered_at"] = store.now()
     store.update_call(call_id, **fields)
+    live.last_sound = 0.0
     spawn(call_id, watchdog(call_id))
+    spawn(call_id, _dead_line(call_id))
     if row["listen_in"]:
         await owner.listen_in(call_id)
+
+
+async def _dead_line(call_id: str) -> None:
+    """After the pick-up: nobody speaks, so the AI says a short hello once (a person may be waiting for the
+    caller to start). No sound at all for DEAD_AIR_SECONDS: nobody is there, hang up."""
+    started = time.monotonic()
+    await asyncio.sleep(config.SILENT_PICKUP_SECONDS)
+    live = LIVE.get(call_id)
+    if not live or live.last_talk:
+        return
+    if live.bot:
+        await live.bot.say("Hello?")
+    await asyncio.sleep(config.DEAD_AIR_SECONDS - config.SILENT_PICKUP_SECONDS)
+    live, row = LIVE.get(call_id), store.get_call(call_id)
+    if live and row and not is_final(row) and not live.last_talk and live.last_sound < started:
+        event(call_id, "no sound on the line, hanging up")
+        store.update_call(call_id, outcome_result="no_human", outcome_summary="The call was answered, but there "
+                          "was no sound on the line.")
+        await stop_call(call_row(call_id))
 
 
 async def bot_finished(call_id: str, bot=None) -> None:
@@ -788,13 +839,17 @@ def _drop(call_id: str) -> Live | None:
 # --- Watchdog: max_minutes is a planned length, not a blind cut (Call4me time-limit.ts lesson) ---
 
 def next_deadline(now: float, deadline: float, started: float, phase: str | None, last_talk: float,
-                  owner_on_call: bool = False) -> float | None:
+                  owner_on_call: bool = False, last_sound: float | None = None) -> float | None:
     """At the planned end: on hold add HOLD_EXTENSION, in a live talk add TALK_EXTENSION, else None (hang up).
+    A hold whose line has been silent for SILENT_HOLD_MINUTES gets no more time (`last_sound`; None: not known).
     Never passes MAX_CALL_MINUTES after `started`."""
     ceiling = started + config.MAX_CALL_MINUTES * 60
     if now < deadline:
         return min(deadline, ceiling)
     if now >= ceiling:
+        return None
+    if phase == "on_hold" and not owner_on_call and last_sound is not None and (
+            now - last_sound > config.SILENT_HOLD_MINUTES * 60):
         return None
     if phase == "on_hold":
         new = now + config.HOLD_EXTENSION_MINUTES * 60
@@ -813,9 +868,20 @@ async def watchdog(call_id: str) -> None:
         row, live = store.get_call(call_id), LIVE.get(call_id)
         if not row or not live or is_final(row):
             return
-        new = next_deadline(time.monotonic(), deadline, started, row["phase"], live.last_talk,
-                            owner.view(call_id)["state"] == "on_call")
+        on_call = owner.view(call_id)["state"] == "on_call"
+        new = next_deadline(time.monotonic(), deadline, started, row["phase"], live.last_talk, on_call,
+                            max(live.last_sound, started))
         if new is None:
+            # In a live talk (the hard ceiling was reached) the AI gets a moment to say goodbye first.
+            talking = live.last_talk and time.monotonic() - live.last_talk < config.TALK_RECENT_SECONDS
+            if talking and live.bot and not on_call:
+                event(call_id, "time limit reached, wrapping up")
+                await live.bot.tell("The time for this call is up. Say one short goodbye line now and call end_call.",
+                                    run_llm=True)
+                await asyncio.sleep(config.WRAP_UP_SECONDS)
+                row = store.get_call(call_id)
+                if not row or is_final(row):
+                    return
             event(call_id, "time limit reached, hanging up")
             await stop_call(call_row(call_id))
             return

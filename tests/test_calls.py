@@ -79,7 +79,8 @@ def test_save_profile_round_trips_every_setting():
               "leave_voicemail": False, "voice": "Meera", "record_calls": False, "max_minutes": 10, "mode": "transfer",
               "reach": "phone", "alert_wait_seconds": 30, "phone_ring_seconds": 40, "no_answer": "end_politely",
               "alert_on_human": False, "listen_in": True, "alert_sound": False, "alert_notification": False,
-              "alert_push": False, "push_shows_business": False}
+              "alert_push": False, "push_shows_business": False, "timezone": "America/Los_Angeles",
+              "ai_model": "gpt-6.1-terra"}
     values.update({k: "x" for k in config.PROFILE_FIELDS})
     assert set(values) == set(config.SETTINGS)
     p = calls.save_profile(uid(), values)
@@ -261,7 +262,7 @@ class StubBot:
     def __init__(self):
         self.moved, self.summaries, self.tap = True, 0, False
 
-    async def summary_if_missing(self):
+    async def recap(self):
         self.summaries += 1
 
     async def set_tap(self, on):
@@ -313,3 +314,42 @@ def test_hang_up_while_dialing_hangs_up_the_returned_call(monkeypatch, fresh):
     monkeypatch.setattr(twilio_api, "create_call", slow_create)
     v = place()
     assert v["status"] == "canceled" and ("CAlate", {"hang_up": True}) in fresh.updated
+
+
+def test_cost_estimate_and_evals():
+    """A finished call shows what it cost (list prices) and plain measures of how it went."""
+    import json
+
+    from callenvoy import usage
+    v = place()
+    cid = v["id"]
+    assert calls.view(store.get_call(cid))["cost"] is None  # nothing until the call has ended
+    used = usage.add(None, {"llm_in": 100_000, "llm_cached": 80_000, "llm_out": 1_000, "tts_chars": 1_000,
+                            "llm": "gpt-6-luna", "stt": "deepgram", "tts": "fish"})
+    used = usage.add(used, {"llm_in": 100_000, "llm_cached": 0, "llm_out": 0, "tts_chars": 0, "llm": "gpt-6-luna"})
+    assert json.loads(used)["llm_in"] == 200_000 and json.loads(used)["llm"] == "gpt-6-luna"  # counts add, names are set
+    store.add_line(cid, "event", "pressed 1")
+    store.add_question(cid, "Which address?")
+    store.update_call(cid, status="completed", talk_seconds=125, usage=used, answered_at="2026-11-24T10:00:00Z",
+                      human_at="2026-11-24T10:01:10Z", outcome_result="partial", evals=json.dumps({"follow_up": "Call back Monday."}))
+    out = calls.view(store.get_call(cid))
+    c = out["cost"]
+    # 3 started minutes of phone, stream and recording; 125 s of hearing; tokens; 1,000 spoken characters
+    assert c["parts"]["phone"] == round(3 * (0.014 + 0.004 + 0.0025), 4)
+    assert c["parts"]["hearing"] == round(125 / 60 * 0.0077, 4) and c["parts"]["voice"] == 0.015
+    assert c["parts"]["ai"] == round((120_000 * 0.10 + 80_000 * 0.01 + 1_000 * 0.50) / 1e6, 4) and c["complete"]
+    assert c["total"] == round(sum(c["parts"].values()), 3)
+    e = out["evals"]
+    assert e == {"goal": "partial", "reached_person": True, "seconds_to_person": 70, "keys_pressed": 1,
+                 "questions_asked": 1, "ended_by": "them", "follow_up": "Call back Monday."}
+    store.update_call(cid, usage=usage.add(None, {"llm": "some-other-model", "llm_in": 5}))
+    c = calls.view(store.get_call(cid))["cost"]
+    assert c["parts"]["ai"] is None and c["complete"] is False  # a model without a known price is left out, and said so
+
+
+def test_silent_hold_gets_no_more_time():
+    m = 60
+    planned = 30 * m
+    assert calls.next_deadline(planned, planned, 0.0, "on_hold", 0, False, planned - 60) == planned + 15 * m  # music plays
+    assert calls.next_deadline(planned, planned, 0.0, "on_hold", 0, False, planned - 11 * m) is None  # silent 11 minutes
+    assert calls.next_deadline(planned, planned, 0.0, "on_hold", 0, True, planned - 11 * m) == planned + 15 * m  # owner is on

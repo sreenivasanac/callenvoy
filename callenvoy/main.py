@@ -851,7 +851,7 @@ async def twilio_media(ws: WebSocket, token: str):
     before = live.moved_from if live else None  # set when a key press moved the call to this new stream
     profile = calls.get_profile(row["user_id"])  # the call's user: name, details, callback number
     the_bot = bot.CallBot(ws, data["stream_id"], data["call_id"], prompt.build_prompt(row, profile),
-                          keys.for_call(row), voice=row["voice"], call_id=call_id,
+                          keys.for_call(row), voice=row["voice"], call_id=call_id, model=profile["ai_model"],
                           messages=bot.resume_messages(before.context.get_messages()) if before else None)
     try:
         await calls.stream_started(call_id, the_bot)

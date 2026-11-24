@@ -35,6 +35,7 @@ from pipecat.frames.frames import (
     OutputAudioRawFrame,
     TranscriptionFrame,
     TTSAudioRawFrame,
+    TTSSpeakFrame,
 )
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.worker import PipelineParams, PipelineWorker
@@ -51,7 +52,7 @@ from pipecat.services.openai.tts import OpenAITTSService
 from pipecat.transports.websocket.fastapi import FastAPIWebsocketParams, FastAPIWebsocketTransport
 from pipecat.workers.runner import WorkerRunner
 
-from . import calls, config, owner, prompt, store, twilio_api
+from . import calls, config, owner, prompt, store, twilio_api, usage
 
 log = logging.getLogger("callenvoy.bot")
 DIGITS = re.compile(r"^[0-9*#w]{1,20}$")
@@ -238,9 +239,32 @@ def speech(creds, voice_name: str | None, voice_id: str | None = None):
         instructions=config.OPENAI_TTS_STYLE))
 
 
-def save_outcome(call_id: str, result, summary, details=None) -> None:
+def save_outcome(call_id: str, result, summary, details=None, evals: dict | None = None) -> None:
+    fields = {"evals": json.dumps(evals)} if evals is not None else {}
     store.update_call(call_id, outcome_result=result if result in config.OUTCOMES else "not_done",
-                      outcome_summary=str(summary or "")[:1000], outcome_details=json.dumps(details or {}))
+                      outcome_summary=str(summary or "")[:1000],
+                      outcome_details=json.dumps(details if isinstance(details, dict) else {}), **fields)
+
+
+def thinking(creds, model: str | None = None):
+    """The LLM of a call: the user's chosen model on the account's OpenAI key, with the request settings that
+    model needs (config.LLM_MODELS)."""
+    model = model if model in config.LLM_MODELS else config.LLM_MODEL
+    return OpenAILLMService(api_key=creds.openai, settings=OpenAILLMService.Settings(
+        model=model, **config.LLM_MODELS[model]["settings"]))
+
+
+RECAP_PROMPT = """You grade a finished phone call that an AI assistant made for a person. You get the goal, what the
+assistant itself reported (it may be missing or too kind), and the whole transcript ("them" is the business, "ai"
+the assistant, "owner" the person who joined, "event" notes from the system). Judge only from the transcript.
+Return one JSON object:
+- "result": "done" (the goal was fully reached on this call), "partial" (part of it was reached, or a clear answer
+  came but not the result asked for), "not_done" (nothing was reached), "voicemail" (only a voicemail or answering
+  machine), or "no_human" (no live person and no usable answer).
+- "summary": one or two plain sentences on what happened. Name anything that differs from the goal.
+- "details": an object of facts worth keeping (reference number, name of the person, dates, amounts). {} if none.
+- "follow_up": what the person should do next, in one short sentence, or "" when nothing is left to do.
+- "reached_person": true when a live person spoke with the assistant."""
 
 
 def resume_messages(messages: list) -> list:
@@ -264,7 +288,7 @@ class CallBot:
 
     def __init__(self, websocket, stream_sid: str, twilio_call_sid: str, system_prompt: str, creds,
                  voice: str | None = None, voice_id: str | None = None,
-                 call_id: str | None = None, messages: list | None = None):
+                 call_id: str | None = None, messages: list | None = None, model: str | None = None):
         self.call_id = call_id
         self.creds = creds
         self.moved = False  # a key press moved the call to a new stream: this bot ends without a summary
@@ -283,9 +307,12 @@ class CallBot:
             audio_in_enabled=True, audio_out_enabled=True, add_wav_header=False, serializer=serializer,
             allowed_origins=[]))
         stt = hearing(creds)
-        self.llm = OpenAILLMService(api_key=creds.openai, settings=OpenAILLMService.Settings(
-            model=config.LLM_MODEL, temperature=config.LLM_TEMPERATURE))
+        self.llm = thinking(creds, model)
         tts = speech(creds, voice, voice_id)
+        self.meter = usage.Meter()
+        # What this bot runs on, kept with the call so that its cost can be estimated (usage.cost).
+        self.runs_on = {"llm": self.llm._settings.model, "stt": creds.hearing, "tts": creds.voice_provider}
+        ear = usage.Ear(lambda at: calls.note_sound(self.call_id, at))
         names = list(TOOLS) if call_id else ["end_call"]
         self.context = LLMContext(messages=messages or [{"role": "system", "content": system_prompt}],
                                   tools=ToolsSchema(standard_tools=[TOOLS[n] for n in names]))
@@ -295,10 +322,11 @@ class CallBot:
         self.gate = OwnerGate()
         self.tap = AudioBufferProcessor(sample_rate=config.CALL_SAMPLE_RATE, buffer_size=config.AUDIO_DOWN_BYTES)
         self.task = PipelineWorker(
-            Pipeline([self.transport.input(), stt, self.aggs.user(), self.llm_gate, self.llm, tts, self.gate,
-                      self.transport.output(), self.tap, self.aggs.assistant()]),
+            Pipeline([self.transport.input(), ear, stt, self.aggs.user(), self.llm_gate, self.llm, tts, self.meter,
+                      self.gate, self.transport.output(), self.tap, self.aggs.assistant()]),
             params=PipelineParams(audio_in_sample_rate=config.CALL_SAMPLE_RATE,
-                                  audio_out_sample_rate=config.CALL_SAMPLE_RATE),
+                                  audio_out_sample_rate=config.CALL_SAMPLE_RATE,
+                                  enable_metrics=True, enable_usage_metrics=True),  # token and character counts
             idle_timeout_secs=None,  # the default 300 s would kill every long hold; our watchdog replaces it
             enable_rtvi=False)
 
@@ -349,8 +377,22 @@ class CallBot:
             if limit:
                 limit.cancel()
             await self._stop_owner_stt()
+            if self.call_id:
+                self.save_usage()
             if self.call_id and not self.moved:
-                await self.summary_if_missing()
+                await self.recap()
+
+    def save_usage(self, more: dict | None = None) -> None:
+        """Adds what this bot counted to the call (once per bot; a key press starts the next bot at zero)."""
+        row = store.get_call(self.call_id)
+        if row:
+            store.update_call(self.call_id, usage=usage.add(row["usage"], {**self.meter.used, **self.runs_on, **(more or {})}))
+        self.meter.used = dict.fromkeys(usage.COUNTERS, 0)
+
+    async def say(self, text: str) -> None:
+        """Speaks a fixed line without asking the LLM (the hello on a silent pick-up)."""
+        if not self.owner_has_call:
+            await self.task.queue_frame(TTSSpeakFrame(text))
 
     async def _limit(self, seconds: float) -> None:
         await asyncio.sleep(seconds)
@@ -444,27 +486,35 @@ class CallBot:
                 pass
         self.owner_stt = self.owner_runner = None
 
-    async def summary_if_missing(self) -> None:
-        """The other side hung up before end_call: one short GPT request writes the outcome from the transcript."""
+    async def recap(self) -> None:
+        """After the call: one request grades the whole transcript and writes the outcome. The assistant's own
+        report from end_call is only a hint: people hang up before it runs, and it tends to grade itself kindly.
+        If the request fails, the assistant's report stays (or "not_done" when there was none)."""
         row = store.get_call(self.call_id)
-        if not row or row["outcome_result"]:
+        if not row:
             return
-        text = "\n".join(f"{l['who']}: {l['text']}" for l in store.lines(self.call_id) if l["who"] != "event")
-        if not text:
-            save_outcome(self.call_id, "no_human", "Nobody spoke on the call.")
+        lines = store.lines(self.call_id)
+        text = "\n".join(f"{l['who']}: {l['text']}" for l in lines)
+        if not any(l["who"] != "event" for l in lines):
+            save_outcome(self.call_id, "no_human", row["outcome_summary"] or "Nobody spoke on the call.", evals={})
             return
+        own = (f"{row['outcome_result']}: {row['outcome_summary']} {row['outcome_details'] or ''}"
+               if row["outcome_result"] else "(none: the call ended before the assistant reported)")
         try:
             r = await AsyncOpenAI(api_key=self.creds.openai).chat.completions.create(
-                model=config.SUMMARY_MODEL, temperature=0, response_format={"type": "json_object"},
-                messages=[{"role": "system", "content":
-                           f"Phone call goal: {row['goal']}\nReturn JSON: {{\"result\": one of "
-                           f"{', '.join(config.OUTCOMES)}, \"summary\": one or two sentences, \"details\": object of "
-                           "facts like reference numbers}."}, {"role": "user", "content": text[-12000:]}])
+                model=config.RECAP_MODEL, response_format={"type": "json_object"},
+                **config.LLM_MODELS[config.RECAP_MODEL]["settings"].get("extra", {}),
+                messages=[{"role": "system", "content": RECAP_PROMPT},
+                          {"role": "user", "content": f"Goal: {row['goal']}\n\nThe assistant's own report: {own}\n\n"
+                                                      f"Transcript:\n{text[-24000:]}"}])
             out = json.loads(r.choices[0].message.content or "{}")
-            save_outcome(self.call_id, out.get("result"), out.get("summary"), out.get("details"))
+            save_outcome(self.call_id, out.get("result"), out.get("summary"), out.get("details"),
+                         evals={"follow_up": str(out.get("follow_up") or "")[:300],
+                                "reached_person": bool(out.get("reached_person"))})
         except Exception as e:  # noqa: BLE001
-            log.warning("summary failed for %s: %s", self.call_id, e)
-            save_outcome(self.call_id, "not_done", "The other side hung up.")
+            log.warning("recap failed for %s: %s", self.call_id, type(e).__name__)
+            if not row["outcome_result"]:
+                save_outcome(self.call_id, "not_done", "The call ended before the assistant reported a result.")
 
     # --- the bot's tools ---
 
