@@ -210,12 +210,15 @@ def test_openai_hearing_holds_audio_until_the_session_is_ready():
 
     async def go():
         await h._send_audio(b"\x01\x00" * 80)
-        await h._send_audio(b"\x02\x00" * 80)
         await h._commit_audio_buffer()  # the first words ended before the session was ready
+        await h._commit_audio_buffer()  # (a second stop with nothing new adds nothing)
+        await h._send_audio(b"\x02\x00" * 80)  # the next words began, still before it was ready
         assert sent == []
         h._session_ready = True
         await h._send_audio(b"\x03\x00" * 80)
-        assert sent == ["input_audio_buffer.append"] * 2 + ["input_audio_buffer.commit", "input_audio_buffer.append"]
+        # in the order it came: first words, their commit, then the next words
+        assert sent == ["input_audio_buffer.append", "input_audio_buffer.commit", "input_audio_buffer.append",
+                        "input_audio_buffer.append"]
         await h._commit_audio_buffer()
         assert sent[-1] == "input_audio_buffer.commit" and h._held == []
         # the session becomes ready between two audio frames and the next thing is a commit: held audio goes first

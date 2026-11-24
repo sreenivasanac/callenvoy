@@ -115,10 +115,12 @@ function AddSecret({ onChange }: { onChange: (next: Secrets) => void }) {
     setErrors(e);
     if (Object.keys(e).length) return;
     setBusy(true);
+    const sent = { label, value };
     try {
       onChange(await api.saveSecret(label.trim(), value.trim()));
-      setLabel('');
-      setValue(''); // the value does not stay in the page
+      // The value does not stay in the page. (Only what was sent is cleared: a new one typed meanwhile stays.)
+      setLabel((now) => (now === sent.label ? '' : now));
+      setValue((now) => (now === sent.value ? '' : now));
     } catch (err) {
       const field = err instanceof ApiError && (err.field === 'label' || err.field === 'value') ? err.field : 'form';
       setErrors({ [field]: (err as Error).message });

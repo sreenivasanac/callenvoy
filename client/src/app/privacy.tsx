@@ -29,7 +29,7 @@ export default function PrivacyScreen() {
         [
           'Who else handles it',
           [
-            'Twilio carries the call and keeps the recording. OpenAI runs the AI that talks on the call; it also turns speech into text and makes the voice unless you add other keys. Deepgram hears the call and Fish Audio makes the voice when those are used. If you add another AI service, it gets the words of the call in place of the OpenAI model. An email service sends the sign-in link.',
+            'Twilio carries the call and keeps the recording. OpenAI runs the AI that talks on the call; it also turns speech into text and makes the voice unless you add other keys. Deepgram hears the call and Fish Audio makes the voice when those are used. If you add another AI service, it gets the words of the call in place of the OpenAI model while the call runs. After every call, one request to OpenAI reads the transcript to write the outcome, whichever service did the talking. An email service sends the sign-in link.',
             'Each of them has its own privacy terms. When you use your own keys, these are your accounts with them. Nothing is sold, and nothing is used for advertising.',
           ],
         ],

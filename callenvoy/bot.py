@@ -211,30 +211,30 @@ class OpenAIHearing(OpenAIRealtimeSTTService):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self._held: list[bytes] = []
-        self._commit_held = False
+        self._held: list[bytes | None] = []  # audio chunks and, as None, the commits between them, in order
 
     async def _flush(self):
-        """Sends what was held, then the commit that was held with it. Only once the session is ready."""
+        """Sends what was held, in the order it came: one utterance's audio, its commit, the next one's audio."""
         held, self._held = self._held, []
-        for chunk in held:
-            await super()._send_audio(chunk)
-        if held and self._commit_held:
-            await super()._commit_audio_buffer()
-        self._commit_held = False
+        for item in held:
+            if item is None:
+                await super()._commit_audio_buffer()
+            else:
+                await super()._send_audio(item)
 
     async def _send_audio(self, audio: bytes):
         if not self._session_ready:
             self._held.append(audio)
-            while sum(map(len, self._held)) > self.HOLD_BYTES:
-                self._held.pop(0)
+            while sum(len(x) for x in self._held if x) > self.HOLD_BYTES:
+                self._held = self._held[1:]
             return
         await self._flush()
         await super()._send_audio(audio)
 
     async def _commit_audio_buffer(self):
-        if not self._session_ready:  # the speech ended before the session was ready: commit after the flush
-            self._commit_held = bool(self._held)
+        if not self._session_ready:  # the speech ended before the session was ready: its commit keeps its place
+            if self._held and self._held[-1] is not None:
+                self._held.append(None)
             return
         await self._flush()  # the session became ready between two audio frames: held speech goes out first
         await super()._commit_audio_buffer()
@@ -279,6 +279,14 @@ def thinking(creds, model: str | None = None):
     model = model if model in config.LLM_MODELS else config.LLM_MODEL
     return OpenAILLMService(api_key=creds.openai, settings=OpenAILLMService.Settings(
         model=model, **config.LLM_MODELS[model]["settings"]))
+
+
+def _excerpt(transcript: str, head: int = 6000, tail: int = 18000) -> str:
+    """A very long transcript is cut in the middle (the long hold), not at the start: a result confirmed early
+    in the call must stay visible to the recap."""
+    if len(transcript) <= head + tail:
+        return transcript
+    return transcript[:head] + "\n[... the middle of the call is left out ...]\n" + transcript[-tail:]
 
 
 RECAP_PROMPT = """You grade a finished phone call that an AI assistant made for a person. You get the goal, what the
@@ -498,6 +506,7 @@ class CallBot:
     async def _start_owner_stt(self, rate: int) -> None:
         """A second tiny pipeline (Deepgram -> sink) for the owner's speech, while the owner has the call."""
         async def on_text(text: str) -> None:
+            text = vault.mask(text, calls.masks(self.call_id))  # the owner may repeat a detail that was given
             store.add_line(self.call_id, "owner", text, calls.line_at(self.call_id))  # end of the words: no start time
             await self.tell(f"{self.owner_name} said to them: {text}", run_llm=False)
 
@@ -536,7 +545,7 @@ class CallBot:
                 **config.LLM_MODELS[config.RECAP_MODEL]["settings"].get("extra", {}),
                 messages=[{"role": "system", "content": RECAP_PROMPT},
                           {"role": "user", "content": f"Goal: {row['goal']}\n\nThe assistant's own report: {own}\n\n"
-                                                      f"Transcript:\n{text[-24000:]}"}])
+                                                      f"Transcript:\n{_excerpt(text)}"}])
             out = json.loads(r.choices[0].message.content or "{}")
             save_outcome(self.call_id, out.get("result"), out.get("summary"), out.get("details"),
                          evals={"follow_up": str(out.get("follow_up") or "")[:300],

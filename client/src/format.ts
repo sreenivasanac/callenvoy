@@ -18,7 +18,8 @@ export function money(n: number) {
 
 /** "about $0.08", or "over $0.08" when the AI model's price is not known and so not in the total. */
 export function costText(c: Cost) {
-  return `${c.complete ? 'about' : 'over'} ${money(c.total)}`;
+  // An incomplete total is a lower bound, so it is always a number ("over $0.00", never "over under 1 cent").
+  return c.complete ? `about ${money(c.total)}` : `over $${c.total.toFixed(2)}`;
 }
 
 /** A short text from the server ("the service does not accept this key") as a sentence. */

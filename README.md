@@ -62,7 +62,7 @@ When you have not saved how calls should be handled, the agent asks before it di
 | OpenAI | yes | The AI that talks; also hearing and voice unless you add the two below | https://platform.openai.com/api-keys |
 | Deepgram | optional | Hearing (speech-to-text) | https://console.deepgram.com |
 | Fish Audio | optional | Ten more voices, three of them Indian English | https://fish.audio/app/api-keys |
-| Another AI service | optional | The model that does the talking, from any OpenAI-compatible service (Google Gemini, OpenRouter, Groq, and others) | that service |
+| Another AI service | optional | The model that does the talking, from any OpenAI-compatible service (Google Gemini, OpenRouter, Groq, and others). The short after-call recap still runs on the OpenAI key. | that service |
 
 - Save them in the console under **Settings > Provider keys**. Each key is checked with its provider, stored encrypted, and never shown again (only a short hint such as `AC…a3a8`). An agent key cannot read or change them.
 - The voice follows the saved keys: with a Fish key the call speaks with a Fish voice, without one with an OpenAI voice. The same holds for Deepgram and hearing.

@@ -170,7 +170,8 @@ def build_prompt(call: dict, profile: dict, secret_labels: list[str] | None = No
     if condition:
         first = (f"This is a hand-over call. You do not solve the task yourself. Your job is to get through the menu and "
                  f"the hold, and to bring {name} onto the line when this condition is met: {condition}. "
-                 "This rule wins over every other rule about resolving the issue.")
+                 f"This rule wins over every other rule about resolving the issue, with one exception: once you are "
+                 f"told that {name} cannot be reached, follow the rule for that case.")
         rules.insert(0, first)
         rules += [
             f"Hand-over to {name}: when this condition is met: {condition}, say \"one moment please, I am bringing {name} "

@@ -124,7 +124,8 @@ instead of `DOMAIN`. You need `uv` on the server, and Node 22.13+ with `pnpm` wh
 - **Twilio:** the call audio, the numbers, recordings (when recording is on), and digits that are keyed in.
 - **OpenAI:** the words of the call as text, and the audio when OpenAI hears or speaks.
 - **Deepgram, Fish Audio:** the other side's audio (Deepgram) and the AI's words (Fish), when those keys are set.
-- **Another AI service:** the words of the call, when one is chosen as the AI model.
+- **Another AI service:** the words of the call, when one is chosen as the AI model. The after-call recap (one
+  request that reads the transcript and writes the outcome) still goes to OpenAI.
 - **Nothing else.** There is no telemetry. The public site at callenvoy.pragnyalabs.com counts page visits with
   a self-hosted tool; your copy does not, because that is tied to its host name.
 
