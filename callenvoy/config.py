@@ -235,6 +235,7 @@ DEMO_HOLD = [  # about 50 s of spoken hold messages with pauses between them
 ]
 DEMO_HOLD_PAUSE_SECONDS = 10
 DEMO_REP_NAME = "Maria"
+DEMO_REP_MODEL = "gpt-6.1-terra"  # the demo line's agent (the cheapest model hung up before the caller spoke)
 DEMO_BUSINESS = "Northstar Internet"
 DEMO_LINE_NUMBER = "+16562405137"  # answers only TWILIO_FROM_NUMBER, so calls to it always use that caller ID
 DEMO_CALL = {  # GET /api/config "demo": pre-fills a first call to the demo line (the console's welcome step)

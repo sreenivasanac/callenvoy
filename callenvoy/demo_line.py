@@ -51,7 +51,7 @@ Rules:
 - Fix the billing issue they describe (for example a double charge or a wrong fee): say you have issued a credit that shows on the next bill.
 - Give the reference number {ref}, reading it slowly.
 - Never say "one moment" and never make the caller wait: you find the account and fix the issue at once, in the same turn.
-- When the caller says goodbye, say goodbye and call end_call."""
+- When the caller says goodbye, say goodbye and call end_call. Never call end_call before the caller has said goodbye."""
 
 
 def refuse_twiml() -> str:

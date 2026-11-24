@@ -843,7 +843,7 @@ async def twilio_media(ws: WebSocket, token: str):
         return
     if demo_rep:
         rep = bot.CallBot(ws, data["stream_id"], data["call_id"], demo_line.rep_prompt(), keys.server(),
-                          voice_id=config.DEMO_REP_VOICE_ID)
+                          voice_id=config.DEMO_REP_VOICE_ID, model=config.DEMO_REP_MODEL)
         await rep.run(speak_first=True, max_seconds=config.DEMO_REP_MAX_SECONDS)
         return
     call_id = row["id"]
