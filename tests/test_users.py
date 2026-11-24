@@ -366,7 +366,7 @@ def test_signup_creates_the_user_at_first_verify(client, monkeypatch):
     assert user["last_seen_at"] is not None
     me = client.get(f"{API}/auth/me", headers={"Cookie": f"ce_session={r.cookies['ce_session']}"}).json()
     assert me == {"signed_in": True, "email": "new@example.com", "mail_ready": True, "is_admin": False,
-                  "signups_open": True, "first_run": True}
+                  "signups_open": True, "first_run": True, "demo": True}
     with pytest.raises(calls.CallError, match="set your name") as e:
         place(user["id"])
     assert e.value.field == "name"

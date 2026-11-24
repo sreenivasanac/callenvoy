@@ -200,7 +200,9 @@ SIGNIN_LIMIT_PER_ADDRESS = (3, 3600)
 SIGNIN_LIMIT_PER_IP = (10, 3600)
 SIGNIN_LIMIT_GLOBAL = (60, 86400)
 EMAIL_MAX = 254
-SIGNUPS_OPEN_DEFAULT = True  # the admin's "New sign-ups" switch (stored in the database once changed)
+# The admin's "New sign-ups" switch (stored in the database once changed). SIGNUPS_OPEN=0 starts a server
+# closed: only the admin (OWNER_EMAIL) can sign in until the admin opens it on the People page.
+SIGNUPS_OPEN_DEFAULT = env("SIGNUPS_OPEN", "1") != "0"
 USER_SEEN_WRITE_SECONDS = 60  # users.last_seen_at is written at most this often
 # Agent sign-in in the browser (oauth.py)
 OAUTH_REQUEST_SECONDS = 600  # the user has this long to sign in and approve
@@ -262,12 +264,15 @@ DEMO_HOLD_PAUSE_SECONDS = 10
 DEMO_REP_NAME = "Maria"
 DEMO_REP_MODEL = "gpt-6.1-terra"  # the demo line's agent (the cheapest model hung up before the caller spoke)
 DEMO_BUSINESS = "Northstar Internet"
-DEMO_LINE_NUMBER = "+16562405137"  # answers only TWILIO_FROM_NUMBER, so calls to it always use that caller ID
+# The demo line is a second Twilio number of the server's account whose voice webhook is <address>/api/demo-line.
+# It answers only the server's own number (TWILIO_FROM_NUMBER), so calls to it always run on the server's keys.
+# Optional: without DEMO_LINE_NUMBER there is no demo line, and a user needs their own keys for any call.
+DEMO_LINE_NUMBER = env("DEMO_LINE_NUMBER").strip()
 DEMO_CALL = {  # GET /api/config "demo": pre-fills a first call to the demo line (the console's welcome step)
     "number": DEMO_LINE_NUMBER, "business": DEMO_BUSINESS,
     "goal": "Ask billing to remove a wrong charge of 30 dollars on the October bill and get a reference number.",
     "facts": "Service address: 12 Oak Street, Springfield.", "menu_tips": "Billing is option 1.",
-}
+} if DEMO_LINE_NUMBER else None
 
 
 REQUIRED_ENV = ("TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_FROM_NUMBER", "DEEPGRAM_API_KEY",

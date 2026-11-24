@@ -631,7 +631,8 @@ async def auth_me(request: Request):
     on = bool(user and not user["disabled"])
     return {"signed_in": on, "email": user["email"] if on else None, "mail_ready": auth.mail_ready(),
             "is_admin": on and auth.is_admin(user), "signups_open": auth.signups_open(),
-            "first_run": on and not calls.get_profile(user["id"])["name"]}
+            "first_run": on and not calls.get_profile(user["id"])["name"],
+            "demo": bool(config.DEMO_LINE_NUMBER)}  # this server has a demo line (free first calls)
 
 
 @api.post("/api/auth/request")

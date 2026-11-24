@@ -212,8 +212,8 @@ def resolve(inp: PlaceCallInput, profile: dict) -> dict:
 
 # --- Limits ---
 
-KEYS_NEEDED = ("real calls need your own Twilio and OpenAI keys: add them in the console under Settings > "
-               f"Provider keys. Without them you can call the demo line, {config.DEMO_LINE_NUMBER}")
+KEYS_NEEDED = ("real calls need your own Twilio and OpenAI keys: add them in the console under Settings > Provider keys."
+               + (f" Without them you can call the demo line, {config.DEMO_LINE_NUMBER}" if config.DEMO_LINE_NUMBER else ""))
 
 
 def _admin_id() -> str | None:
@@ -297,7 +297,7 @@ async def place_call(user_id: str, inp: PlaceCallInput, allow_secrets: list | No
         raise CallError("set your name first: the AI says it calls on your behalf. Save it with "
                         "callenvoy_save_profile (name) or in the console under Settings > Profile", field="name")
     # The demo line answers only the server's number, so a call to it always runs on the server's keys.
-    demo = number == config.DEMO_LINE_NUMBER
+    demo = bool(config.DEMO_LINE_NUMBER) and number == config.DEMO_LINE_NUMBER
     creds = keys.server() if demo else keys.for_user(user)
     if creds is None:
         raise CallError(KEYS_NEEDED, 403, field="keys", code="keys_needed")
@@ -711,6 +711,8 @@ def forget_caller_id() -> None:
 
 def demo_calls_left(user: dict) -> int:
     """Free calls to the demo line this user still has (the admin is not counted)."""
+    if not config.DEMO_LINE_NUMBER:
+        return 0
     if auth.is_admin(user):
         return config.DEMO_CALLS_PER_USER
     return max(0, config.DEMO_CALLS_PER_USER - store.demo_calls(user["id"]))
