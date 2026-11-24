@@ -128,7 +128,7 @@ def test_mcp_in_process_tools_and_profile_round_trip():
     async def go():
         async with Client(mcp_server.server) as c:
             tools = (await c.list_tools()).tools
-            assert len(tools) == 12 and all(t.name.startswith("callenvoy_") for t in tools)
+            assert len(tools) == 13 and all(t.name.startswith("callenvoy_") for t in tools)
             r = await c.call_tool("callenvoy_save_profile", {"name": "Alex", "leave_voicemail": False, "vin": "1HG"})
             assert not r.is_error and r.structured_content["leave_voicemail"] is False
             r = await c.call_tool("callenvoy_get_profile", {})

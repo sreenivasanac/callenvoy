@@ -1,4 +1,4 @@
-"""The MCP server: 12 tools with the prefix callenvoy_. Stateless, JSON responses.
+"""The MCP server: 13 tools with the prefix callenvoy_. Stateless, JSON responses.
 
 Design follows the Call4me MCP server (src/server/mcp/server.ts, MIT): one prefix, text plus structured content
 in every result, plain tool errors, one log line per tool call without arguments, read-only / open-world /
@@ -15,14 +15,15 @@ from mcp.server.mcpserver import MCPServer
 from mcp_types import CallToolResult, TextContent, ToolAnnotations
 from pydantic import Field
 
-from . import auth, calls, config, keys, owner, vault
+from . import auth, calls, config, keys, owner, store, vault
 
 log = logging.getLogger("callenvoy.mcp")
 P = config.TOOL_PREFIX
 
 INSTRUCTIONS = f"""{config.APP_NAME} places real phone calls for the user and can bring the user onto a call.
 1. Read {P}get_profile first: the user's name, callback number and call defaults. A call needs the name: if it is empty, ask the user and save it with {P}save_profile. Collect every detail the call needs BEFORE dialing (what to get done, the facts the AI may share, what it may accept without asking).
-2. Place the call with {P}place_call. It returns a call id at once.
+2. If mode_chosen in the profile is false and the user did not say how they want the call handled, ask once: "Shall the AI handle the whole call (you can listen in), or get through the menu and the hold and bring you on when a person answers?" Pass the answer as mode ("handle" or "transfer") and offer to save it as their default with {P}save_profile. The user can also switch this on the call's page in the console while it runs, and you can with {P}set_mode.
+   Place the call with {P}place_call. It returns a call id at once.
 3. Loop {P}get_call with wait_seconds: 30 (pass next_line back as since_line) until finished is true.
 4. If open_questions is not empty, the person on the phone is waiting: ask the user and reply with {P}answer_question right away.
 5. If owner.state is "alerting", a person is on the line: tell the user they can join in the {config.APP_NAME} console, or ring their phone with {P}connect_me. Use {P}hand_back when the user wants the AI to continue.
@@ -127,7 +128,9 @@ def profile_view(profile: dict, verified: bool, user: dict) -> dict:
     k = keys.view(user)
     return {**profile, "caller_id_verified": verified, "keys_ready": k["ready"],
             "demo_calls_left": calls.demo_calls_left(user), "demo_line": config.DEMO_LINE_NUMBER,
-            "voice_provider": k["voice_provider"], "protected_details": vault.labels(user["id"])}
+            "voice_provider": k["voice_provider"], "protected_details": vault.labels(user["id"]),
+            # false: the user never chose how calls are handled, so ask them before the first call (instructions)
+            "mode_chosen": "mode" in store.get_profile(user["id"])}
 
 
 def build() -> MCPServer:
@@ -183,6 +186,14 @@ def build() -> MCPServer:
                          phone: Annotated[str | None, Field(max_length=40, description="a different US/Canada number to ring")] = None) -> CallToolResult:
         msg = await owner.connect(uid(), call_id, mode, reach, phone)
         return ok(msg, {"call_id": call_id, "message": msg, "owner": owner.view(call_id)})
+
+    @tool(server, "set_mode", "Change how a live call is handled",
+          'While a call runs: "transfer" makes the AI bring the user on as soon as a person answers; "handle" makes '
+          "the AI do the call itself. alert_on_human switches the alert when a person answers.", ACT)
+    async def set_mode(call_id: CallId, mode: Literal["handle", "transfer"] | None = None,
+                       alert_on_human: bool | None = None) -> CallToolResult:
+        v = await calls.set_mode(uid(), call_id, mode, alert_on_human)
+        return ok(f"mode {v['mode']}, alert when a person answers: {str(v['alert_on_human']).lower()}", v)
 
     @tool(server, "hand_back", "Give the call back to the AI",
           "While the user has the call, give it back to the AI. The user keeps listening if their audio is open.", ACT)

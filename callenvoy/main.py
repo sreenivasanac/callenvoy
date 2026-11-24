@@ -311,6 +311,16 @@ class Connect(BaseModel):
     phone: str | None = Field(None, max_length=40)
 
 
+class ModeChange(BaseModel):
+    mode: str | None = Field(None, max_length=20)
+    alert_on_human: StrictBool | None = None
+
+
+@api.post("/api/calls/{call_id}/mode")
+async def set_mode(user: Me, call_id: str, body: ModeChange):
+    return await calls.set_mode(user["id"], call_id, body.mode, body.alert_on_human)
+
+
 class SecretAnswer(BaseModel):
     question_id: calls.QuestionId
     allow: StrictBool

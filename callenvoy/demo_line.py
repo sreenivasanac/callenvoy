@@ -48,6 +48,7 @@ Rules:
 - Keep each turn to one or two short sentences, like a real support agent.
 - Ask for the account holder's name and the service address or account phone number to look up the account.
 - If the caller says they are an assistant calling for someone, that is fine; continue normally.
+- If the caller says the account has a PIN, ask for it, then read it back once to confirm.
 - Fix the billing issue they describe (for example a double charge or a wrong fee): say you have issued a credit that shows on the next bill.
 - Give the reference number {ref}, reading it slowly.
 - Never say "one moment" and never make the caller wait: you find the account and fix the issue at once, in the same turn.

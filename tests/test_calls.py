@@ -385,3 +385,29 @@ def test_quiet_line_nudges_the_ai_once_per_silent_stretch(monkeypatch):
     monkeypatch.setattr(calls.asyncio, "sleep", fast_sleep)
     run(calls._quiet_watch(cid))
     assert told == [True, True]  # at 30 s of silence, and once more 30 s after the music stopped
+
+
+def test_mode_can_change_while_the_call_runs():
+    v = place()
+    cid = v["id"]
+    store.update_call(cid, status="in_progress", phase="talking")
+    told = []
+
+    class Bot:
+        async def tell(self, text, run_llm):
+            told.append((text, run_llm))
+
+    calls.LIVE[cid].bot = Bot()
+    out = run(calls.set_mode(uid(), cid, "transfer", alert_on_human=False))
+    row = store.get_call(cid)
+    assert out["mode"] == "transfer" and row["mode"] == "transfer" and row["alert_on_human"] == 0
+    assert "hand-over call" in told[0][0] and told[0][1] is True  # a person is on the line: act now
+    run(calls.set_mode(uid(), cid, "handle"))
+    assert "handle the call yourself" in told[1][0] and told[1][1] is False
+    run(calls.set_mode(uid(), cid, "handle"))
+    assert len(told) == 2  # no change, nothing said
+    with pytest.raises(calls.CallError, match="handle"):
+        run(calls.set_mode(uid(), cid, "nope"))
+    store.update_call(cid, status="completed")
+    with pytest.raises(calls.CallError, match="ended"):
+        run(calls.set_mode(uid(), cid, "transfer"))

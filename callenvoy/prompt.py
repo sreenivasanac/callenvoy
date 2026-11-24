@@ -223,6 +223,16 @@ def handed_back_note(name: str, lost: bool = False) -> str:
             "line so they know they are talking to the assistant again.")
 
 
+def mode_note(mode: str, name: str) -> str:
+    """The user changed the mode while the call runs."""
+    if mode == "transfer":
+        return (f"Change of plan from {name}: this is now a hand-over call. Do not solve the task yourself any more. "
+                f"As soon as a live person is on the line (also if one is right now), say \"one moment please, I am "
+                f"bringing {name} on the line\" and call connect_owner.")
+    return (f"Change of plan from {name}: handle the call yourself from here on. Do not bring {name} on the line "
+            "unless the person insists on speaking to them.")
+
+
 def joined_note(name: str) -> str:
     return f"{name} has joined the call and is talking now. Stay completely silent until you are told the call is handed back."
 

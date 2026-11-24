@@ -522,6 +522,32 @@ async def stop_user_calls(user_id: str, drop: bool = False) -> None:
             await finish(r["id"])
 
 
+async def set_mode(user_id: str, call_id: str, mode: str | None = None, alert_on_human: bool | None = None) -> dict:
+    """Changes a live call's mode: "transfer" (bring the user on when a person answers) or "handle" (the AI does
+    the call), and whether the user is alerted when a person answers. The AI is told at once."""
+    row = must(user_id, call_id)
+    live = LIVE.get(call_id)
+    if is_final(row) or not live:
+        raise CallError("the call has ended", 409)
+    if mode not in (None, "handle", "transfer"):
+        raise CallError('mode must be "handle" or "transfer"', field="mode")
+    fields = {}
+    if mode and mode != row["mode"]:
+        fields["mode"] = mode
+    if alert_on_human is not None and int(alert_on_human) != row["alert_on_human"]:
+        fields["alert_on_human"] = int(alert_on_human)
+    if fields:
+        store.update_call(call_id, **fields)
+    if "mode" in fields:
+        from . import prompt  # (prompt imports nothing of ours; kept local to keep this module's imports short)
+        name = prompt.owner_name(row, get_profile(user_id))
+        event(call_id, "changed: bring me on when a person answers" if mode == "transfer" else "changed: the AI handles the call")
+        if live.bot:
+            talking = row["phase"] == "talking"  # a person is on the line now: act on it at once
+            await live.bot.tell(prompt.mode_note(mode, name), run_llm=talking and mode == "transfer")
+    return view(call_row(call_id), transcript=False)
+
+
 async def answer_question(user_id: str, call_id: str, question_id: str, answer: str) -> dict:
     row = must(user_id, call_id)
     q = store.get_question(question_id)
