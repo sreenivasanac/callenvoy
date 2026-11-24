@@ -15,7 +15,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from . import auth, config, demo_line, guard, keys, owner, store, twilio_api
+from . import auth, config, demo_line, guard, keys, owner, push, store, twilio_api, vault
 from . import usage as metering  # (calls.usage is the admin's per-user numbers)
 
 log = logging.getLogger("callenvoy.calls")
@@ -96,6 +96,10 @@ class Live:
     last_them: float = 0.0  # monotonic time of the last line from the other side
     last_talk: float = 0.0  # last line from anyone (them, ai, owner)
     last_sound: float = 0.0  # monotonic time the line last carried any sound (speech, music, tones)
+    # Protected details (vault.py), all in memory for this call only:
+    allowed: set = field(default_factory=set)  # labels the user allowed during the call
+    typed: dict = field(default_factory=dict)  # label -> a value the user typed for this call (never stored)
+    masks: dict = field(default_factory=dict)  # label -> value that was given: masked in everything heard after
     answered: float = 0.0  # time.time() of the answer: the recording starts there
 
 
@@ -280,7 +284,9 @@ def url(path: str) -> str:
     return config.public_base_url() + path
 
 
-async def place_call(user_id: str, inp: PlaceCallInput) -> dict:
+async def place_call(user_id: str, inp: PlaceCallInput, allow_secrets: list | None = None) -> dict:
+    """`allow_secrets`: labels of saved protected details this call may give. Only the console passes it (the
+    user ticked them); a call placed by an agent has none, and the user is asked when the call needs one."""
     try:
         number = guard.check_number(inp.to)
     except ValueError as e:
@@ -314,6 +320,12 @@ async def place_call(user_id: str, inp: PlaceCallInput) -> dict:
                             "callenvoy_verify_number (or Settings > Verify) and type the code on that phone; or use "
                             'from "callenvoy"', field="from")
         from_number = own
+    allowed = []
+    for label in allow_secrets or []:
+        saved = vault.find(user_id, str(label))
+        if not saved:
+            raise CallError(f"no protected detail named {label}", field="allow_secrets")
+        allowed.append(saved["label"])
     seconds_left = check_limits(user, guest)
 
     call_id = store.new_id("c_")
@@ -330,6 +342,7 @@ async def place_call(user_id: str, inp: PlaceCallInput) -> dict:
         "ws_token": secrets.token_urlsafe(32),
         "direction": "outbound", "leave_voicemail": int(s["leave_voicemail"]),
         "from_number": from_number or creds.from_number or None, "own_keys": int(creds.own),
+        "secrets": json.dumps(allowed) if allowed else None,
     })
     LIVE[call_id] = Live()
     try:
@@ -418,7 +431,11 @@ def view(row: dict, since_line: int = 0, transcript: bool = True) -> dict:
         "leave_voicemail": bool(row["leave_voicemail"]),
         "human_at": row["human_at"],
         "owner": owner.view(cid),
-        "open_questions": [{"id": q["id"], "question": q["question"]} for q in qs if q["answer"] is None],
+        # kind: null (a plain question), "permission" (may the call use a saved protected detail?) or "secret"
+        # (type one for this call). The last two can only be answered by the user, in the console.
+        "open_questions": [{"id": q["id"], "question": q["question"], "kind": q["kind"], "label": q["label"]}
+                           for q in qs if q["answer"] is None],
+        "secrets_allowed": json.loads(row["secrets"]) if row.get("secrets") else [],
         "answered_questions": [{"id": q["id"], "question": q["question"], "answer": q["answer"]} for q in qs if q["answer"] is not None],
         "outcome": outcome,
         "talk_seconds": talk, "owner_seconds": row["owner_seconds"] or 0, "error": row["error"],
@@ -514,6 +531,9 @@ async def answer_question(user_id: str, call_id: str, question_id: str, answer: 
         raise CallError("the call has ended, so the answer cannot reach it", 409)
     if q["answer"] is not None:
         raise CallError("this question was already answered", 409, field="question_id")
+    if q["kind"]:  # an agent key must never be the one that allows or supplies a protected detail
+        raise CallError("only the user can answer this, in the CallEnvoy console (open the call there)", 403,
+                        field="question_id")
     answer = answer.strip()
     if not 1 <= len(answer) <= 1000:
         raise CallError("answer must be 1 to 1000 characters", field="answer")
@@ -528,9 +548,87 @@ async def answer_question(user_id: str, call_id: str, question_id: str, answer: 
     return {"question_id": question_id, "answer": answer}
 
 
-async def ask(call_id: str, question: str) -> str | None:
-    """Used by the bot's ask_user tool: saves the question and waits up to QUESTION_WAIT_SECONDS."""
-    qid = store.add_question(call_id, question)
+async def answer_secret(user_id: str, call_id: str, question_id: str, allow: bool, value: str | None = None) -> dict:
+    """The user's answer, from the console only, to a "permission" question (allow a saved protected detail on
+    this call) or a "secret" question (type one for this call; it is kept in memory until the call ends and never
+    stored). Nothing of the value goes into the question's saved answer or the transcript."""
+    row = must(user_id, call_id)
+    q = store.get_question(question_id)
+    if not q or q["call_id"] != call_id or not q["kind"]:
+        raise CallError(f"no such request {question_id} on this call", 404, field="question_id")
+    live = LIVE.get(call_id)
+    if is_final(row) or not live:
+        raise CallError("the call has ended", 409)
+    if q["answer"] is not None:
+        raise CallError("this was already answered", 409, field="question_id")
+    label = q["label"]
+    if allow and q["kind"] == "secret":
+        value = (value or "").strip()
+        if not 1 <= len(value) <= config.SECRET_MAX:
+            raise CallError(f"type the value (1 to {config.SECRET_MAX} characters)", field="value")
+        live.typed[label] = value
+    elif allow:
+        live.allowed.add(label)
+        store.update_call(call_id, secrets=json.dumps(sorted({*json.loads(row["secrets"] or "[]"), label})))
+    said = ("given for this call (not stored)" if q["kind"] == "secret" else "allowed") if allow else "not allowed"
+    store.answer_question(question_id, said)
+    event(call_id, f"{label}: {said}")
+    fut = live.futures.pop(question_id, None)
+    if fut and not fut.done():
+        fut.set_result(allow)
+    return {"question_id": question_id, "answer": said}
+
+
+async def secret_for(call_id: str, label: str) -> tuple[str | None, str | None]:
+    """(label, value) of the protected detail the bot wants to give, or (label, None) when it may not be given.
+    A saved one needs the user's permission for this call (given when the call was placed in the console, or
+    asked now); an unknown label is asked of the user as a value to type. Waits for the answer like ask()."""
+    row, live = call_row(call_id), LIVE.get(call_id)
+    saved = vault.find(row["user_id"], label)
+    try:
+        name = saved["label"] if saved else vault.clean_label(label)
+    except vault.VaultError:
+        return None, None
+    if not live:
+        return name, None
+    if name in live.typed:
+        return name, live.typed[name]
+    if saved and name in {*json.loads(row["secrets"] or "[]"), *live.allowed}:
+        return name, vault.value(row["user_id"], name)
+    asyncio.create_task(push.send_alert(row, "secret"))  # best effort: the console is where this is answered
+    if saved:
+        ok = await ask(call_id, f"The call asks for your {name}. Allow it for this call?", "permission", name)
+        return name, vault.value(row["user_id"], name) if ok else None
+    ok = await ask(call_id, f"The call asks for: {name}. Type it to give it on this call only.", "secret", name)
+    return name, live.typed.get(name) if ok else None
+
+
+def gave_secret(call_id: str, label: str, value: str) -> None:
+    """From now on this value is masked in whatever the other side says (a read-back)."""
+    live = LIVE.get(call_id)
+    if live:
+        live.masks[label] = value
+
+
+def masks(call_id: str | None) -> dict:
+    live = LIVE.get(call_id or "")
+    return live.masks if live else {}
+
+
+async def pause_recording(call_id: str, paused: bool) -> None:
+    """Keeps a spoken secret out of the recording. Best effort: a call that is not recorded has nothing to pause."""
+    row = store.get_call(call_id)
+    if row and row["record"] and row["twilio_sid"] and not is_final(row):
+        try:
+            await twilio_api.pause_recording(keys.for_call(row), row["twilio_sid"], paused)
+        except Exception as e:  # noqa: BLE001
+            log.warning("recording %s failed for %s: %s", "pause" if paused else "resume", call_id, type(e).__name__)
+
+
+async def ask(call_id: str, question: str, kind: str | None = None, label: str | None = None):
+    """Used by the bot's ask_user tool: saves the question and waits up to QUESTION_WAIT_SECONDS for the answer
+    (text; for the kinds "permission" and "secret" True or False). None: no answer came."""
+    qid = store.add_question(call_id, question, kind, label)
     event(call_id, f"asked owner: {question}")
     live = LIVE.get(call_id)
     if not live:

@@ -15,7 +15,7 @@ from mcp.server.mcpserver import MCPServer
 from mcp_types import CallToolResult, TextContent, ToolAnnotations
 from pydantic import Field
 
-from . import auth, calls, config, keys, owner
+from . import auth, calls, config, keys, owner, vault
 
 log = logging.getLogger("callenvoy.mcp")
 P = config.TOOL_PREFIX
@@ -28,6 +28,7 @@ INSTRUCTIONS = f"""{config.APP_NAME} places real phone calls for the user and ca
 5. If owner.state is "alerting", a person is on the line: tell the user they can join in the {config.APP_NAME} console, or ring their phone with {P}connect_me. Use {P}hand_back when the user wants the AI to continue.
 6. Tell the user the outcome in a line or two.
 Calls are US and Canada only. Use {P}verify_number once before calling from the user's own number (from: "own").
+Protected details (an SSN, an account PIN, a card number): never put one into goal, facts or the profile, and never ask the user to tell you one. The user saves them in the console (Settings > Protected details; get_profile lists the labels only). The call gives one itself when the business asks, after the user allows it in the console. A question that needs the user's OK shows in {P}get_call: tell the user to open the call in the console.
 Keys: real calls run on the user's own Twilio and OpenAI accounts. If {P}get_profile says keys_ready is false, the user must first add those keys in the {config.APP_NAME} console (Settings > Provider keys); you cannot add them. Until then only the demo line (demo_line in the profile, a made-up internet provider's billing line) can be called, demo_calls_left times: offer that as a first try."""
 
 RO = ToolAnnotations(read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=False)
@@ -96,6 +97,10 @@ def call_text(v: dict) -> str:
     """Open question first, in capitals, with the tool to answer it; an owner alert second (Call4me pattern)."""
     out = []
     for q in v["open_questions"]:
+        if q.get("kind"):  # a protected detail: the agent can neither allow nor supply it
+            out.append("THE USER'S OK IS NEEDED (the person on the phone is waiting). Tell the user to open this call "
+                       f"in the {config.APP_NAME} console and answer there; you cannot answer it: {q['question']}")
+            continue
         out.append(f"OPEN QUESTION (the person on the phone is waiting; answer now with {P}answer_question): [{q['id']}] {q['question']}")
     if v["owner"]["state"] == "alerting":
         out.append(f"A PERSON IS ON THE LINE. The user can join in the console, or call {P}connect_me to ring their phone.")
@@ -122,7 +127,7 @@ def profile_view(profile: dict, verified: bool, user: dict) -> dict:
     k = keys.view(user)
     return {**profile, "caller_id_verified": verified, "keys_ready": k["ready"],
             "demo_calls_left": calls.demo_calls_left(user), "demo_line": config.DEMO_LINE_NUMBER,
-            "voice_provider": k["voice_provider"]}
+            "voice_provider": k["voice_provider"], "protected_details": vault.labels(user["id"])}
 
 
 def build() -> MCPServer:

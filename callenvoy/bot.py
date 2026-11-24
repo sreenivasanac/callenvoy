@@ -28,6 +28,7 @@ from pipecat.frames.frames import (
     Frame,
     FunctionCallResultProperties,
     InputAudioRawFrame,
+    InterimTranscriptionFrame,
     InterruptionFrame,
     LLMContextFrame,
     LLMMessagesAppendFrame,
@@ -52,7 +53,7 @@ from pipecat.services.openai.tts import OpenAITTSService
 from pipecat.transports.websocket.fastapi import FastAPIWebsocketParams, FastAPIWebsocketTransport
 from pipecat.workers.runner import WorkerRunner
 
-from . import calls, config, owner, prompt, store, twilio_api, usage
+from . import calls, config, owner, prompt, store, twilio_api, usage, vault
 
 log = logging.getLogger("callenvoy.bot")
 DIGITS = re.compile(r"^[0-9*#w]{1,20}$")
@@ -130,6 +131,24 @@ class OwnerGate(LLMGate):
         await self.broadcast_frame(InterruptionFrame)
 
 
+class SecretMask(FrameProcessor):
+    """Right after speech-to-text: a protected detail that was given on this call is masked in what the other
+    side says (a read-back), before the AI model or the transcript gets the words. `secrets` returns
+    label -> value for the call (empty for nearly every call)."""
+
+    def __init__(self, secrets, **kwargs):
+        super().__init__(**kwargs)
+        self._secrets = secrets
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+        if isinstance(frame, (TranscriptionFrame, InterimTranscriptionFrame)) and frame.text:
+            given = self._secrets()
+            if given:
+                frame.text = vault.mask(frame.text, given)
+        await self.push_frame(frame, direction)
+
+
 class LineSink(FrameProcessor):
     """End of the owner's speech-to-text pipeline: hands final transcriptions to a callback."""
 
@@ -159,6 +178,11 @@ TOOLS = {
         "ask_user", "Ask the person you call for a question you need answered (a detail you lack, or an offer outside "
         "what you may accept). Returns their answer, or tells you none came in time.",
         {"question": {"type": "string", "description": "short, self-contained question"}}, ["question"]),
+    "give_secret": _tool(
+        "give_secret", "Give the other side one protected detail of the person you call for (an SSN, a PIN), by "
+        "voice or on the keypad. You never see the value: it is said or keyed for you. Say \"one moment\" first.",
+        {"label": {"type": "string", "description": 'the detail\'s label, e.g. "SSN"'},
+         "how": {"type": "string", "enum": ["say", "keypad"]}}, ["label", "how"]),
     "connect_owner": _tool(
         "connect_owner", "Bring the person you call for onto the line. Say your one line first. If the result says "
         "they cannot be reached, do not call this again."),
@@ -316,6 +340,7 @@ class CallBot:
         # What this bot runs on, kept with the call so that its cost can be estimated (usage.cost).
         self.runs_on = {"llm": self.llm._settings.model, "stt": creds.hearing, "tts": creds.voice_provider}
         ear = usage.Ear(lambda at: calls.note_sound(self.call_id, at))
+        mask = SecretMask(lambda: calls.masks(self.call_id))
         names = list(TOOLS) if call_id else ["end_call"]
         self.context = LLMContext(messages=messages or [{"role": "system", "content": system_prompt}],
                                   tools=ToolsSchema(standard_tools=[TOOLS[n] for n in names]))
@@ -325,7 +350,7 @@ class CallBot:
         self.gate = OwnerGate()
         self.tap = AudioBufferProcessor(sample_rate=config.CALL_SAMPLE_RATE, buffer_size=config.AUDIO_DOWN_BYTES)
         self.task = PipelineWorker(
-            Pipeline([self.transport.input(), ear, stt, self.aggs.user(), self.llm_gate, self.llm, tts, self.meter,
+            Pipeline([self.transport.input(), ear, stt, mask, self.aggs.user(), self.llm_gate, self.llm, tts, self.meter,
                       self.gate, self.transport.output(), self.tap, self.aggs.assistant()]),
             params=PipelineParams(audio_in_sample_rate=config.CALL_SAMPLE_RATE,
                                   audio_out_sample_rate=config.CALL_SAMPLE_RATE,
@@ -335,8 +360,9 @@ class CallBot:
 
         for n in names:
             # ask_user is async (the talk goes on) and has no Pipecat timeout: it waits QUESTION_WAIT_SECONDS for
-            # an answer, then for the hand-back if the owner has the call.
-            self.llm.register_function(n, getattr(self, f"_tool_{n}"), cancel_on_interruption=n != "ask_user")
+            # an answer, then for the hand-back if the owner has the call. give_secret may wait the same way.
+            self.llm.register_function(n, getattr(self, f"_tool_{n}"),
+                                       cancel_on_interruption=n not in ("ask_user", "give_secret"))
 
         @self.aggs.user().event_handler("on_user_turn_started")
         async def _them_start(_agg, _strategy):
@@ -457,6 +483,7 @@ class CallBot:
         text = (text or "").strip()
         if not text or not self.call_id:
             return
+        text = vault.mask(text, calls.masks(self.call_id))  # a second net behind SecretMask
         store.add_line(self.call_id, who, text, calls.line_at(self.call_id, self.turn_start.pop(who, None)))
         calls.note_line(self.call_id, who)
         if who == "ai":
@@ -563,6 +590,58 @@ class CallBot:
         await params.result_callback(
             answer if answer is not None else
             "No answer yet. Say you do not have that detail right now and carry on. A later answer may still arrive.")
+
+    async def _tool_give_secret(self, params) -> None:
+        """Says or keys a protected detail without the value ever entering the model's context (vault.py)."""
+        if self.owner_has_call:
+            await params.result_callback(OWNER_HAS_CALL, properties=NO_LLM)
+            return
+        how = params.arguments.get("how")
+        label, value = await calls.secret_for(self.call_id, str(params.arguments.get("label", "")))
+        await self.released.wait()  # an answer during a take-over waits for the hand-back
+        if not value:
+            await params.result_callback(f"The {label or 'detail'} was not given. Say you cannot share that right "
+                                         "now, and carry on with the rest.")
+            return
+        if how == "keypad":
+            keyed = vault.digits(value)
+            if not DIGITS.match(keyed):
+                await params.result_callback("This detail cannot be keyed in. Give it with how \"say\".")
+                return
+            store.update_call(self.call_id, phase="menu")
+            calls.event(self.call_id, f"keyed in {label}")
+            self.moved = True
+            try:
+                await calls.press_keys(self.call_id, keyed, self)
+            except Exception as e:  # noqa: BLE001
+                self.moved = False
+                log.warning("keying a protected detail failed for %s: %s", self.call_id, type(e).__name__)
+                await params.result_callback("The keys could not be sent. Try once more.")
+                return
+            await params.result_callback("keyed in", properties=NO_LLM)
+            return
+        try:
+            pcm, rate = await vault.speech(self.creds, store.get_call(self.call_id)["voice"], vault.spoken(value))
+        except Exception as e:  # noqa: BLE001
+            log.warning("speaking a protected detail failed for %s: %s", self.call_id, type(e).__name__)
+            await params.result_callback("It could not be said just now. Try once more.")
+            return
+        seconds = len(pcm) / 2 / rate
+        await calls.pause_recording(self.call_id, True)
+        calls.gave_secret(self.call_id, label, value)
+        self.gate.tones_until = time.monotonic() + seconds + 0.5  # their "uh-huh" must not cut it off
+        await self.gate.feed(pcm, rate)
+        calls.event(self.call_id, f"gave {label} by voice")
+        asyncio.create_task(self._resume_recording(seconds + config.SECRET_QUIET_SECONDS))
+        await asyncio.sleep(seconds)  # it plays before the model speaks again
+        await params.result_callback(
+            f"The {label} was just said aloud to them, slowly. Do not say or repeat it yourself. If they read it "
+            f"back, a correct read-back appears to you as [{label}]; any other number they say is wrong, and you "
+            "call give_secret again.")
+
+    async def _resume_recording(self, after: float) -> None:
+        await asyncio.sleep(after)
+        await calls.pause_recording(self.call_id, False)
 
     async def _tool_connect_owner(self, params) -> None:
         if self.owner_has_call:

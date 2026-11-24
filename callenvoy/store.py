@@ -39,7 +39,7 @@ CREATE TABLE IF NOT EXISTS calls (
   talk_seconds INTEGER, error TEXT,
   recording_sid TEXT, recording_seconds INTEGER, recording_token TEXT,
   direction TEXT NOT NULL DEFAULT 'outbound', from_number TEXT, leave_voicemail INTEGER NOT NULL DEFAULT 1,
-  user_id TEXT, own_keys INTEGER NOT NULL DEFAULT 0, usage TEXT, evals TEXT
+  user_id TEXT, own_keys INTEGER NOT NULL DEFAULT 0, usage TEXT, evals TEXT, secrets TEXT
 );
 CREATE INDEX IF NOT EXISTS calls_user ON calls (user_id, created_at);
 CREATE TABLE IF NOT EXISTS lines (
@@ -48,7 +48,7 @@ CREATE TABLE IF NOT EXISTS lines (
 );
 CREATE TABLE IF NOT EXISTS questions (
   id TEXT PRIMARY KEY, call_id TEXT NOT NULL, question TEXT NOT NULL,
-  answer TEXT, asked_at TEXT NOT NULL, answered_at TEXT
+  answer TEXT, asked_at TEXT NOT NULL, answered_at TEXT, kind TEXT, label TEXT
 );
 {PROFILE_TABLE};
 CREATE TABLE IF NOT EXISTS push_subscriptions (
@@ -62,6 +62,10 @@ CREATE TABLE IF NOT EXISTS api_keys (
 CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL, expires_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS signin_tokens (token_hash TEXT PRIMARY KEY, email TEXT NOT NULL, expires_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS service (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS secrets (
+  user_id TEXT NOT NULL, label TEXT NOT NULL, secret TEXT NOT NULL, hint TEXT NOT NULL, created_at TEXT NOT NULL,
+  PRIMARY KEY (user_id, label)
+);
 CREATE TABLE IF NOT EXISTS oauth_clients (client_id TEXT PRIMARY KEY, info TEXT NOT NULL, created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS provider_keys (
   user_id TEXT NOT NULL, provider TEXT NOT NULL, secret TEXT NOT NULL, hint TEXT NOT NULL, checked_at TEXT NOT NULL,
@@ -73,7 +77,10 @@ CREATE TABLE IF NOT EXISTS provider_keys (
 # client_id: the OAuth client a key was issued to by a browser sign-in (NULL: a key made in the console).
 # usage: what the call's bots counted (JSON, usage.py). evals: what the after-call recap found (JSON).
 MIGRATIONS = [("lines", "at", "REAL"), ("calls", "own_keys", "INTEGER NOT NULL DEFAULT 0"), ("api_keys", "client_id", "TEXT"),
-              ("calls", "usage", "TEXT"), ("calls", "evals", "TEXT")]
+              ("calls", "usage", "TEXT"), ("calls", "evals", "TEXT"),
+              # secrets: labels of protected details the user allowed for the call (JSON list). Questions: kind
+              # "permission" (may the call use a saved secret?) or "secret" (type one for this call); NULL: a plain question.
+              ("calls", "secrets", "TEXT"), ("questions", "kind", "TEXT"), ("questions", "label", "TEXT")]
 
 db: sqlite3.Connection | None = None
 # Set by calls.py: called with the call id after every write that changes a call (long-poll wake-up).
@@ -212,7 +219,7 @@ def delete_user(user_id: str) -> list[str]:
         mine = "SELECT id FROM calls WHERE user_id = ?"
         _q(f"DELETE FROM lines WHERE call_id IN ({mine})", (user_id,))
         _q(f"DELETE FROM questions WHERE call_id IN ({mine})", (user_id,))
-        for t in ("calls", "profile", "api_keys", "sessions", "push_subscriptions", "provider_keys"):
+        for t in ("calls", "profile", "api_keys", "sessions", "push_subscriptions", "provider_keys", "secrets"):
             _q(f"DELETE FROM {t} WHERE user_id = ?", (user_id,))
         _q("DELETE FROM signin_tokens WHERE email = ?", (email,))
         _q("DELETE FROM users WHERE id = ?", (user_id,))
@@ -344,9 +351,10 @@ def next_line(call_id: str) -> int:
 
 # --- questions ---
 
-def add_question(call_id: str, question: str) -> str:
+def add_question(call_id: str, question: str, kind: str | None = None, label: str | None = None) -> str:
     qid = new_id("q_")
-    _q("INSERT INTO questions (id, call_id, question, asked_at) VALUES (?, ?, ?, ?)", (qid, call_id, question, now()))
+    _q("INSERT INTO questions (id, call_id, question, asked_at, kind, label) VALUES (?, ?, ?, ?, ?, ?)",
+       (qid, call_id, question, now(), kind, label))
     on_change(call_id)
     return qid
 
@@ -386,6 +394,21 @@ def save_profile(user_id: str, changes: dict) -> None:
 def profile_names() -> dict[str, str]:
     """user id -> profile name, for the admin's usage list."""
     return {r[0]: json.loads(r[1]) for r in _q("SELECT user_id, value FROM profile WHERE key = 'name'")}
+
+
+# --- protected details (encrypted by vault.py; this module only stores the text) ---
+
+def saved_secrets(user_id: str) -> list[dict]:
+    return _rows("SELECT * FROM secrets WHERE user_id = ? ORDER BY created_at, rowid", (user_id,))
+
+
+def save_secret(user_id: str, label: str, secret: str, hint: str) -> None:
+    _q("INSERT INTO secrets (user_id, label, secret, hint, created_at) VALUES (?, ?, ?, ?, ?) "
+       "ON CONFLICT(user_id, label) DO UPDATE SET secret = excluded.secret, hint = excluded.hint", (user_id, label, secret, hint, now()))
+
+
+def delete_secret(user_id: str, label: str) -> bool:
+    return _q("DELETE FROM secrets WHERE user_id = ? AND label = ?", (user_id, label)).rowcount > 0
 
 
 # --- provider keys (encrypted by keys.py; this module only stores the text) ---

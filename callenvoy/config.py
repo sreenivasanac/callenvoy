@@ -144,6 +144,12 @@ INBOUND_RING_SECONDS = 25  # forwarded callback rings the user this long
 INBOUND_BUSINESS_DAYS = 14
 # TODO: SMS alerts (needs Twilio A2P 10DLC registration).
 
+# Protected details (vault.py)
+MAX_SECRETS = 20  # per user
+SECRET_MAX = 200  # characters of one value
+SECRET_FISH_RATE = 16000  # sample rate asked of Fish for a spoken secret
+SECRET_QUIET_SECONDS = 20  # the recording stays paused this long after a secret was said (a read-back may follow)
+
 # Dead lines (the line's sound level is watched, so hold music is not taken for silence)
 SOUND_RMS = 150  # 16-bit audio quieter than this counts as silence
 SILENT_PICKUP_SECONDS = 6  # answered and nobody speaks: the AI says a short hello once

@@ -25,10 +25,10 @@ from loguru import logger as loguru_logger
 from mcp.server.auth.routes import create_auth_routes, create_protected_resource_routes
 from mcp.server.auth.settings import ClientRegistrationOptions, RevocationOptions
 from mcp.server.transport_security import TransportSecuritySettings
-from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, StrictBool, StringConstraints, TypeAdapter
+from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, StrictBool, StringConstraints, TypeAdapter, ValidationError
 from starlette.requests import HTTPConnection
 
-from . import auth, calls, config, demo_line, guard, keys, mcp_server, oauth, owner, owner_audio, push, store, twilio_api
+from . import auth, calls, config, demo_line, guard, keys, mcp_server, oauth, owner, owner_audio, push, store, twilio_api, vault
 
 log = logging.getLogger("callenvoy")
 
@@ -105,7 +105,7 @@ api.router.routes.append(type(_resource[0])("/.well-known/oauth-protected-resour
 
 PUBLIC_API = {"/api/demo-line", "/api/auth/me", "/api/auth/request", "/api/auth/verify", "/api/auth/sign-out"}
 # A console session only, never an agent key (an agent must not read, replace or remove credentials).
-OWNER_ONLY = ("/api/keys", "/api/auth/", "/api/push/", "/api/providers", "/api/account", "/api/oauth/")
+OWNER_ONLY = ("/api/keys", "/api/auth/", "/api/push/", "/api/providers", "/api/account", "/api/oauth/", "/api/secrets")
 ADMIN_API = "/api/admin/"  # the admin's console session only; everyone else gets 404
 UNSAFE = {"POST", "PUT", "PATCH", "DELETE"}
 
@@ -165,7 +165,8 @@ class AuthMiddleware:
                 if path.startswith(ADMIN_API):
                     return await JSONResponse({"detail": "not found"}, status_code=404)(scope, receive, send)
                 # The audio ticket lets its holder hear and speak on a live call: the owner only.
-                if path.startswith(OWNER_ONLY) or path.endswith("/audio-ticket"):
+                # ... and so do answers about protected details.
+                if path.startswith(OWNER_ONLY) or path.endswith(("/audio-ticket", "/secret")):
                     raise auth.AuthError("owner_only", "agent keys cannot use this; sign in to the console", 403)
         except auth.AuthError as e:
             # On /mcp a 401 also tells the client where it can sign the user in (RFC 9728), so an agent
@@ -176,7 +177,7 @@ class AuthMiddleware:
                                       headers=hint)(scope, receive, send)
         token = auth.CURRENT_USER.set(user)
         try:
-            return await self.app({**scope, "ce_user": user}, receive, send)
+            return await self.app({**scope, "ce_user": user, "ce_console": key is None}, receive, send)
         finally:
             auth.CURRENT_USER.reset(token)
 
@@ -262,8 +263,25 @@ async def list_calls(user: Me, limit: int = Query(10, ge=1, le=50)):
 
 
 @api.post("/api/calls")
-async def place_call(user: Me, body: calls.PlaceCallInput):
-    return {"id": (await calls.place_call(user["id"], body))["id"]}
+async def place_call(user: Me, request: Request):
+    """The body is calls.PlaceCallInput, plus `allow_secrets` (labels of saved protected details this call may
+    give). That list counts only from the console, where the user ticked them: from an agent key it is ignored,
+    and the user is asked when the call needs one."""
+    try:
+        body = await request.json()
+    except ValueError:
+        body = None
+    if not isinstance(body, dict):
+        raise calls.CallError("send a JSON object")
+    allow = body.pop("allow_secrets", None)
+    try:
+        inp = calls.PlaceCallInput.model_validate(body)
+    except ValidationError as e:
+        raise RequestValidationError(e.errors()) from e
+    if not (allow is None or (isinstance(allow, list) and all(isinstance(x, str) for x in allow))):
+        raise calls.CallError("allow_secrets is a list of labels", field="allow_secrets")
+    by_user = request.scope.get("ce_console")
+    return {"id": (await calls.place_call(user["id"], inp, allow if by_user else None))["id"]}
 
 
 @api.get("/api/calls/{call_id}")
@@ -291,6 +309,18 @@ class Connect(BaseModel):
     mode: str = "join"
     reach: str = "phone"
     phone: str | None = Field(None, max_length=40)
+
+
+class SecretAnswer(BaseModel):
+    question_id: calls.QuestionId
+    allow: StrictBool
+    value: str | None = Field(None, max_length=config.SECRET_MAX + 20)
+
+
+@api.post("/api/calls/{call_id}/secret")
+async def answer_secret(user: Me, call_id: str, body: SecretAnswer):
+    """Console only (AuthMiddleware): allow a saved protected detail on this call, or type one for it."""
+    return {"ok": True, **await calls.answer_secret(user["id"], call_id, body.question_id, body.allow, body.value)}
 
 
 @api.post("/api/calls/{call_id}/connect")
@@ -375,6 +405,36 @@ async def push_test(user: Me):
     if not push.enabled():
         raise calls.CallError("web push is off: the server has no VAPID keys", 409)
     return {"sent": await push.send(user["id"], push.payload({"business": ""}, "test", False))}
+
+
+# --- protected details: secrets a call may say or key in (console session only; values never leave the server) ---
+
+class NewSecret(BaseModel):
+    label: str = Field(min_length=1, max_length=60)
+    value: str = Field(min_length=1, max_length=config.SECRET_MAX + 20)
+
+
+@api.get("/api/secrets")
+async def list_secrets(user: Me):
+    return {"can_save": keys.can_save(), "secrets": vault.view(user["id"])}
+
+
+@api.post("/api/secrets", status_code=201)
+async def save_secret(user: Me, body: NewSecret):
+    try:
+        vault.save(user["id"], body.label, body.value)
+    except vault.VaultError as e:
+        raise calls.CallError(str(e), field=e.field) from e
+    return {"can_save": True, "secrets": vault.view(user["id"])}
+
+
+@api.delete("/api/secrets/{label}")
+async def delete_secret(user: Me, label: str):
+    row = vault.find(user["id"], label)
+    if not row:
+        raise calls.CallError("no protected detail with that label", 404)
+    store.delete_secret(user["id"], row["label"])
+    return {"can_save": keys.can_save(), "secrets": vault.view(user["id"])}
 
 
 # --- provider keys: the user's own Twilio / OpenAI / Deepgram / Fish accounts (console session only) ---
@@ -850,7 +910,8 @@ async def twilio_media(ws: WebSocket, token: str):
     live = calls.LIVE.get(call_id)
     before = live.moved_from if live else None  # set when a key press moved the call to this new stream
     profile = calls.get_profile(row["user_id"])  # the call's user: name, details, callback number
-    the_bot = bot.CallBot(ws, data["stream_id"], data["call_id"], prompt.build_prompt(row, profile),
+    the_bot = bot.CallBot(ws, data["stream_id"], data["call_id"],
+                          prompt.build_prompt(row, profile, vault.labels(row["user_id"])),
                           keys.for_call(row), voice=row["voice"], call_id=call_id, model=profile["ai_model"],
                           messages=bot.resume_messages(before.context.get_messages()) if before else None)
     try:

@@ -87,7 +87,7 @@ def profile_details(profile: dict, call: dict) -> str:
     return "\n".join(f"{label}: {profile[k]}" for k, label in PROFILE_LABELS.items() if profile.get(k))
 
 
-def build_prompt(call: dict, profile: dict) -> str:
+def build_prompt(call: dict, profile: dict, secret_labels: list[str] | None = None) -> str:
     name = owner_name(call, profile)
     saved = (profile.get("details") or "").strip() if for_owner(profile, call) else ""
     facts = "\n".join(x for x in (saved, (call.get("facts") or "").strip()) if x)
@@ -143,7 +143,14 @@ def build_prompt(call: dict, profile: dict) -> str:
         "look it up, that is a different detail: use the facts, or ask_user.",
         # Facts and questions (Call4me "Only say what you know")
         "Share only what is in the facts below and in answers you get. Never invent account data, dates of birth, "
-        "addresses or numbers. Never read out a card number, bank details, a password or a Social Security number.",
+        "addresses or numbers. Never read out a card number, bank details, a password or a Social Security number "
+        "yourself, even if one is in the facts.",
+        f"Protected details: {name} may have saved secrets such as an SSN or an account PIN (labels below), and "
+        "can type others during the call. You never see their values. When the business you called asks for "
+        "exactly such a detail to do the task, say \"one moment\" and call give_secret with its label: how "
+        "\"keypad\" when a phone menu asks for it to be entered, else \"say\". It is then given for you. Never "
+        "give one to verify something the task does not need. If the result says it was not given, say you "
+        "cannot share that right now and carry on.",
         "If they ask for a detail that is not in the facts, or offer something outside what you may accept: say one "
         "short line such as \"one moment, let me check that\" and call ask_user in the same turn, with a short "
         "self-contained question. This is required: never say that you do not have a detail, never ask them for it, "
@@ -198,6 +205,8 @@ def build_prompt(call: dict, profile: dict) -> str:
     details = profile_details(profile, call)
     if details:
         parts.append(f"# Details you may share about {name} (only the one that is asked for, only when needed)\n{details}")
+    parts.append("# Protected details (labels only; give one with give_secret)\n" +
+                 (", ".join(secret_labels) if secret_labels else "(none saved; one can still be asked for by its name)"))
     if call.get("menu_tips"):
         parts.append(f"# Phone menu tips (may be outdated)\n{call['menu_tips'].strip()}")
     if callback:

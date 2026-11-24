@@ -61,6 +61,12 @@ async def update_call(creds, sid: str, *, hang_up: bool = True, twiml: str | Non
     await _post(creds, f"Calls/{sid}.json", [("Twiml", twiml)] if twiml else [("Status", "completed")])
 
 
+async def pause_recording(creds, sid: str, paused: bool) -> None:
+    """Pauses (silence in the file) or resumes the recording of a live call."""
+    await _post(creds, f"Calls/{sid}/Recordings/Twilio.CURRENT.json",
+                [("Status", "paused"), ("PauseBehavior", "silence")] if paused else [("Status", "in-progress")])
+
+
 def twiml(body: str) -> str:
     """A TwiML document; `body` must already be XML-escaped."""
     return f'<?xml version="1.0" encoding="UTF-8"?><Response>{body}</Response>'
