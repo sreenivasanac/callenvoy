@@ -81,9 +81,7 @@ def cost(row: dict) -> dict | None:
     voice = used.get("tts_chars", 0) / 1000 * p["tts_1k_chars"].get(used.get("tts", ""), 0)
     rate = p["llm_1m"].get(used.get("llm", ""))
     ai = None
-    if used.get("engine") == "live":  # billed by the minute of the session; the text model's tokens are small beside it
-        ai = seconds / 60 * p["live_minute"]
-    elif rate:
+    if rate:
         fresh = max(0, used.get("llm_in", 0) - used.get("llm_cached", 0))
         ai = (fresh * rate[0] + used.get("llm_cached", 0) * rate[1] + used.get("llm_out", 0) * rate[2]) / 1_000_000
     parts = {"phone": round(phone, 4), "hearing": round(hearing, 4), "ai": None if ai is None else round(ai, 4),

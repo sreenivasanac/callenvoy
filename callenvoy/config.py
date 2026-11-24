@@ -58,12 +58,6 @@ LLM_SERVICES = {
     "xAI": "https://api.x.ai/v1",
     "OpenAI": "https://api.openai.com/v1",
 }
-# The optional speech-to-speech engine (setting engine: "live"): one OpenAI model hears and speaks, and hands
-# tool decisions to a text model. Trial state: off by default. It bills every minute, also on hold, and has no
-# Indian English voice.
-LIVE_MODEL = "gpt-live-1.1"
-LIVE_BACKEND_MODEL = "gpt-6.1-terra"  # decides key presses, questions, hand-over and the end of the call
-LIVE_VOICES = {"female": "marin", "male": "cedar"}  # by the gender of the voice the user chose
 RECAP_MODEL = "gpt-6-luna"  # writes the outcome from the whole transcript after the call (always on the OpenAI key)
 TTS_MODEL = "s2.1-pro"
 # End of turn: Pipecat's default (LocalSmartTurnAnalyzerV3). TODO: SpeechTimeoutUserTurnStopStrategy if too slow on 2 vCPUs.
@@ -169,7 +163,6 @@ WRAP_UP_SECONDS = 40  # at the time limit in a live talk the AI gets this long t
 # Used only to show a user an estimate of what a call cost on their own accounts: CallEnvoy bills nothing.
 PRICES = {
     "twilio_minute": 0.014, "twilio_stream_minute": 0.004, "twilio_recording_minute": 0.0025,
-    "live_minute": 0.05,  # gpt-live, every minute of the session (its text model's tokens come on top)
     "stt_minute": {"deepgram": 0.0077, "openai": 0.006},
     "tts_1k_chars": {"fish": 0.015, "openai": 0.016},
     # per 1M tokens: input, cached input, output
@@ -234,7 +227,6 @@ SETTINGS: dict[str, dict] = {
     "leave_voicemail": {"type": "bool", "default": True},
     "voice": {"type": "choice", "choices": VOICE_NAMES, "default": DEFAULT_VOICE},
     "ai_model": {"type": "choice", "choices": [*LLM_MODELS, CUSTOM_LLM], "default": LLM_MODEL},
-    "engine": {"type": "choice", "choices": ["chain", "live"], "default": "chain"},
     "record_calls": {"type": "bool", "default": RECORD_CALLS_DEFAULT},
     "max_minutes": {"type": "int", "min": 1, "max": MAX_CALL_MINUTES, "default": DEFAULT_CALL_MINUTES},
     "mode": {"type": "choice", "choices": ["handle", "transfer"], "default": "handle"},

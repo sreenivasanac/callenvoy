@@ -281,20 +281,6 @@ def thinking(creds, model: str | None = None):
         model=model, **config.LLM_MODELS[model]["settings"]))
 
 
-def live_engine(creds, voice_name: str | None):
-    """The speech-to-speech engine: gpt-live hears and speaks; a text model on the same key makes the tool calls
-    (Pipecat runs our tool handlers for it). Used in place of hearing + thinking + speech."""
-    from pipecat.services.openai.live.llm import OpenAILiveLLMService
-    from pipecat.services.openai.responses.llm import OpenAIResponsesLLMService
-
-    gender = next((v["gender"] for v in config.VOICES if v["name"] == voice_name), "female")
-    return OpenAILiveLLMService(
-        api_key=creds.openai,
-        settings=OpenAILiveLLMService.Settings(model=config.LIVE_MODEL, voice=config.LIVE_VOICES[gender]),
-        delegation=OpenAILiveLLMService.ResponsesDelegation(
-            settings=OpenAIResponsesLLMService.Settings(model=config.LIVE_BACKEND_MODEL)))
-
-
 RECAP_PROMPT = """You grade a finished phone call that an AI assistant made for a person. You get the goal, what the
 assistant itself reported (it may be missing or too kind), and the whole transcript ("them" is the business, "ai"
 the assistant, "owner" the person who joined, "event" notes from the system). Judge only from the transcript.
@@ -329,8 +315,7 @@ class CallBot:
 
     def __init__(self, websocket, stream_sid: str, twilio_call_sid: str, system_prompt: str, creds,
                  voice: str | None = None, voice_id: str | None = None,
-                 call_id: str | None = None, messages: list | None = None, model: str | None = None,
-                 engine: str = "chain"):
+                 call_id: str | None = None, messages: list | None = None, model: str | None = None):
         self.call_id = call_id
         self.creds = creds
         self.moved = False  # a key press moved the call to a new stream: this bot ends without a summary
@@ -348,33 +333,24 @@ class CallBot:
         self.transport = FastAPIWebsocketTransport(websocket, FastAPIWebsocketParams(
             audio_in_enabled=True, audio_out_enabled=True, add_wav_header=False, serializer=serializer,
             allowed_origins=[]))
-        self.live = engine == "live" and bool(call_id)
+        stt = hearing(creds)
+        self.llm = thinking(creds, model)
+        tts = speech(creds, voice, voice_id)
         self.meter = usage.Meter()
-        if self.live:
-            self.llm = live_engine(creds, voice)
-            self.runs_on = {"llm": config.LIVE_BACKEND_MODEL, "stt": "", "tts": "", "engine": "live"}
-        else:
-            stt = hearing(creds)
-            self.llm = thinking(creds, model)
-            tts = speech(creds, voice, voice_id)
-            # What this bot runs on, kept with the call so that its cost can be estimated (usage.cost).
-            self.runs_on = {"llm": self.llm._settings.model, "stt": creds.hearing, "tts": creds.voice_provider}
+        # What this bot runs on, kept with the call so that its cost can be estimated (usage.cost).
+        self.runs_on = {"llm": self.llm._settings.model, "stt": creds.hearing, "tts": creds.voice_provider}
         ear = usage.Ear(lambda at: calls.note_sound(self.call_id, at))
         mask = SecretMask(lambda: calls.masks(self.call_id))
         names = list(TOOLS) if call_id else ["end_call"]
         self.context = LLMContext(messages=messages or [{"role": "system", "content": system_prompt}],
                                   tools=ToolsSchema(standard_tools=[TOOLS[n] for n in names]))
-        # The live model finds the turns itself (it recommends its own turn strategies to the aggregator).
         self.aggs = LLMContextAggregatorPair(self.context, user_params=LLMUserAggregatorParams(
-            vad_analyzer=None if self.live else SileroVADAnalyzer()))
+            vad_analyzer=SileroVADAnalyzer()))
         self.llm_gate = LLMGate()
         self.gate = OwnerGate()
         self.tap = AudioBufferProcessor(sample_rate=config.CALL_SAMPLE_RATE, buffer_size=config.AUDIO_DOWN_BYTES)
-        # Live: the model sends what it heard upstream to the user aggregator, so the mask sits between the two.
-        middle = ([self.aggs.user(), mask, self.llm] if self.live else
-                  [stt, mask, self.aggs.user(), self.llm_gate, self.llm, tts])
         self.task = PipelineWorker(
-            Pipeline([self.transport.input(), ear, *middle, self.meter,
+            Pipeline([self.transport.input(), ear, stt, mask, self.aggs.user(), self.llm_gate, self.llm, tts, self.meter,
                       self.gate, self.transport.output(), self.tap, self.aggs.assistant()]),
             params=PipelineParams(audio_in_sample_rate=config.CALL_SAMPLE_RATE,
                                   audio_out_sample_rate=config.CALL_SAMPLE_RATE,
@@ -421,9 +397,7 @@ class CallBot:
 
     async def run(self, speak_first: bool = False, max_seconds: float | None = None) -> None:
         """Runs until the call ends. max_seconds is a hard limit (the demo rep has no call row or watchdog)."""
-        # The demo rep greets; the caller bot waits for the other side. The live engine opens its session on this
-        # frame (it still waits for the other side: nothing in its context asks it to speak first).
-        if speak_first or self.live:
+        if speak_first:  # the demo rep greets; the caller bot waits for the other side
             await self.task.queue_frame(LLMRunFrame())
         limit = asyncio.create_task(self._limit(max_seconds)) if max_seconds else None
         try:

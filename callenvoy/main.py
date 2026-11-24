@@ -931,7 +931,6 @@ async def twilio_media(ws: WebSocket, token: str):
     the_bot = bot.CallBot(ws, data["stream_id"], data["call_id"],
                           prompt.build_prompt(row, profile, vault.labels(row["user_id"])),
                           keys.for_call(row), voice=row["voice"], call_id=call_id, model=profile["ai_model"],
-                          engine=profile["engine"],
                           messages=bot.resume_messages(before.context.get_messages()) if before else None)
     try:
         await calls.stream_started(call_id, the_bot)
