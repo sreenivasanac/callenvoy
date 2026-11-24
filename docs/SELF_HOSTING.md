@@ -48,7 +48,7 @@ Fill in `.env`:
 ```bash
 docker compose up -d --build
 docker compose logs -f callenvoy     # wait for "Application startup complete", then Ctrl+C
-curl https://$DOMAIN/healthz          # {"ok":true}
+curl https://calls.example.com/healthz   # your host name; it answers {"ok":true}
 ```
 
 The first start builds the image (a few minutes) and gets the certificate. If the service refuses to start,

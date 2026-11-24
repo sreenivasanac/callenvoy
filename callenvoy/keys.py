@@ -220,6 +220,13 @@ async def check_llm(body: dict) -> dict:
         except (ValueError, AttributeError):
             said = ""
         raise KeyError_(f"the service refused the test request ({r.status_code}). {said}".strip(), "model")
+    try:
+        called = r.status_code < 300 and bool(r.json()["choices"][0]["message"].get("tool_calls"))
+    except (ValueError, LookupError, TypeError, AttributeError):
+        called = False
+    if not called:
+        raise KeyError_("the model answered, but did not call the test tool. A call needs a model that can use "
+                        "tools: it presses keys and ends the call with them", "model")
     return {"base_url": base, "api_key": key, "model": model}
 
 

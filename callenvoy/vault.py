@@ -35,6 +35,11 @@ def clean_label(label) -> str:
     return label
 
 
+def acceptable(value: str) -> bool:
+    """Long enough to be told from ordinary words when it is read back, and not absurdly long."""
+    return len(re.sub(r"[^0-9A-Za-z]", "", value)) >= config.SECRET_MIN and len(value) <= config.SECRET_MAX
+
+
 def find(user_id: str, label: str) -> dict | None:
     """The saved secret with this label (labels match without regard to case)."""
     want = " ".join(str(label or "").split()).lower()
@@ -52,8 +57,8 @@ def view(user_id: str) -> list[dict]:
 def save(user_id: str, label, value) -> None:
     label = clean_label(label)
     value = str(value or "").strip()
-    if not 1 <= len(value) <= config.SECRET_MAX:
-        raise VaultError(f"a value is 1 to {config.SECRET_MAX} characters", "value")
+    if not acceptable(value):
+        raise VaultError(f"a value has {config.SECRET_MIN} to {config.SECRET_MAX} letters or digits", "value")
     if not keys.can_save():
         raise VaultError("saving is off on this server (CALLENVOY_SECRET_KEY is not set)")
     old = find(user_id, label)
@@ -87,34 +92,47 @@ def spoken(value: str) -> str:
 
 
 def mask(text: str, secrets: dict[str, str]) -> str:
-    """Replaces a secret that appears in `text` with "[label]". Digit secrets are also found when spoken or
-    grouped differently ("one two three, 45 6789"): what counts is the same run of digits."""
+    """Replaces a secret that appears in `text` with "[label]", however it is grouped or spelled out:
+    "123 45 6789", "one two three, four five...", "A B 1 2", "tulip garden 9". What counts is the same run of
+    letters and digits, starting and ending at word borders."""
     for label, secret in secrets.items():
-        want = digits(secret)
-        if len(want) >= 4:
-            text = _mask_digits(text, want, f"[{label}]")
-        if len(secret) >= 4:
-            text = re.sub(re.escape(secret), f"[{label}]", text, flags=re.IGNORECASE)
+        want = re.sub(r"[^0-9a-z]", "", secret.lower())
+        if want:
+            text = _mask_run(text, want, f"[{label}]")
     return text
 
 
-def _mask_digits(text: str, want: str, token: str) -> str:
-    # Tokens of the text, each with the digits it stands for ("" for an ordinary word, None for a separator).
+def _mask_run(text: str, want: str, token: str) -> str:
+    """Finds `want` as a run of whole words (letters, digits, or a number word standing for its digit when
+    the secret has that digit there) with only spaces and punctuation between them."""
     parts = re.findall(r"\d+|[A-Za-z]+|[^\dA-Za-z]+", text)
-    stand = [p if p.isdigit() else _WORDS.get(p.lower(), "") if p.isalpha() else None for p in parts]
     out, i = [], 0
     while i < len(parts):
-        run, j = "", i
-        while j < len(parts) and stand[j] != "" and len(run) < len(want):
-            run += stand[j] or ""
-            j += 1
-        if stand[i] and run == want:
-            out.append(token)
-            i = j
-        else:
+        end = _run_end(parts, i, want) if parts[i][0].isalnum() else None
+        if end is None:
             out.append(parts[i])
             i += 1
+        else:
+            out.append(token)
+            i = end
     return "".join(out)
+
+
+def _run_end(parts: list[str], i: int, want: str) -> int | None:
+    """The index after the last part of a run that starts at part `i` and spells `want`, or None."""
+    got, j = "", i
+    while j < len(parts) and len(got) < len(want):
+        p = parts[j]
+        if p[0].isalnum():
+            word, rest = p.lower(), want[len(got):]
+            if rest.startswith(word):
+                got += word
+            elif word in _WORDS and rest.startswith(_WORDS[word]):  # "seven" where the secret has 7
+                got += _WORDS[word]
+            else:
+                return None
+        j += 1
+    return j if got == want else None
 
 
 async def speech(creds, voice_name: str | None, text: str) -> tuple[bytes, int]:

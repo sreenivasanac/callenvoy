@@ -146,6 +146,7 @@ INBOUND_BUSINESS_DAYS = 14
 
 # Protected details (vault.py)
 MAX_SECRETS = 20  # per user
+SECRET_MIN = 3  # letters or digits of one value (anything shorter cannot be told from ordinary words)
 SECRET_MAX = 200  # characters of one value
 SECRET_FISH_RATE = 16000  # sample rate asked of Fish for a spoken secret
 SECRET_QUIET_SECONDS = 20  # the recording stays paused this long after a secret was said (a read-back may follow)

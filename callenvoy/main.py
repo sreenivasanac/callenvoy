@@ -248,7 +248,9 @@ async def get_config(user: Me):
         "ai_models": [{"id": name, "about": m["about"], "price": config.PRICES["llm_1m"].get(name)}
                       for name, m in config.LLM_MODELS.items()] +
                      ([{"id": config.CUSTOM_LLM, "about": f"your own service: {k['providers']['llm']['model']}", "price": None}]
-                      if k["providers"]["llm"]["saved"] or (k["server_keys"] and keys.server().llm) else []),
+                      if k["providers"]["llm"]["saved"] else
+                      [{"id": config.CUSTOM_LLM, "about": f"this server's service: {keys.server().llm[2]}", "price": None}]
+                      if k["server_keys"] and keys.server().llm else []),
         "prices": config.PRICES,
         "keys": {"ready": k["ready"], "server_keys": k["server_keys"], "can_save": k["can_save"],
                  "demo_calls_left": calls.demo_calls_left(user)},

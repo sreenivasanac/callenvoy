@@ -655,15 +655,19 @@ def test_another_ai_service_is_checked_limited_to_known_hosts_and_used(client, f
             asked.append((url, json["model"], bool(json["tools"])))
             if headers["Authorization"] != "Bearer gk-good-key":
                 return httpx.Response(401, json={})
-            return httpx.Response(200 if json["model"] == "fast-model" else 404, json={"error": {"message": "no such model"}})
+            if json["model"] == "talks-only":  # answers, but never calls a tool
+                return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+            if json["model"] != "fast-model":
+                return httpx.Response(404, json={"error": {"message": "no such model"}})
+            return httpx.Response(200, json={"choices": [{"message": {"tool_calls": [{"id": "1"}]}}]})
 
     monkeypatch.setattr(keys.httpx, "AsyncClient", FakeClient)
     good = {"base_url": "https://api.groq.com/openai/v1/", "api_key": "gk-good-key", "model": "fast-model"}
     for change, field in (({"base_url": "https://10.0.0.5/v1"}, "base_url"), ({"base_url": "http://api.groq.com/openai/v1"}, "base_url"),
-                          ({"api_key": "gk-wrong-key"}, "api_key"), ({"model": "nope"}, "model")):
+                          ({"api_key": "gk-wrong-key"}, "api_key"), ({"model": "nope"}, "model"), ({"model": "talks-only"}, "model")):
         r = client.put(f"{API}/providers/llm", json={**good, **change}, headers=cb)
         assert r.status_code == 400 and r.json()["field"] == field, change
-    assert len(asked) == 2  # an address outside the list is refused before any request leaves the server
+    assert len(asked) == 3  # an address outside the list is refused before any request leaves the server
     v = client.put(f"{API}/providers/llm", json=good, headers=cb).json()
     llm = v["providers"]["llm"]
     assert llm["saved"] and llm["model"] == "fast-model" and llm["base_url"] == "https://api.groq.com/openai/v1"

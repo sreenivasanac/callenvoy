@@ -16,7 +16,8 @@ def test_save_find_and_never_plain_at_rest():
     assert vault.value(uid(), "ssn") == "123-45-6789" and vault.value(uid(), "nope") is None
     vault.save(uid(), "ssn", "987-65-4321")  # the same label in another case replaces the value
     assert vault.labels(uid()) == ["SSN", "Account PIN"] and vault.value(uid(), "SSN") == "987-65-4321"
-    for label, value, field in (("", "1", "label"), ("x" * 41, "1", "label"), ("<b>", "1", "label"), ("ok", "", "value")):
+    for label, value, field in (("", "1234", "label"), ("x" * 41, "1234", "label"), ("<b>", "1234", "label"), ("ok", "", "value"),
+                                ("ok", "7-1", "value")):  # too short to tell from ordinary words
         with pytest.raises(vault.VaultError) as e:
             vault.save(uid(), label, value)
         assert e.value.field == field
@@ -39,6 +40,13 @@ def test_a_read_back_is_masked_however_it_is_grouped():
     # other numbers stay: a wrong read-back must be seen as wrong, and ordinary numbers are not secrets
     assert vault.mask("is it 123 45 6788? I am one of four agents", s) == "is it 123 45 6788? I am one of four agents"
     assert vault.mask("call 1 800 482 1000", s) == "call 1 800 482 1000"
+    # read back one character at a time, and short codes
+    s = {"Code": "AB12CD", "CVV": "731"}
+    assert vault.mask("that is A B 1 2 C D, right?", s) == "that is [Code], right?"
+    assert vault.mask("a, b, one, two, c, d", s) == "[Code]"
+    assert vault.mask("ab12cd and seven three one", s) == "[Code] and [CVV]"
+    assert vault.mask("the code is 731.", s) == "the code is [CVV]."
+    assert vault.mask("about 7310 people, a bad code", s) == "about 7310 people, a bad code"
 
 
 # --- on a call: permission, a typed value, and nothing of the value anywhere it could be read ---
@@ -91,9 +99,11 @@ def test_a_call_asks_the_user_and_the_value_is_stored_nowhere(monkeypatch, fresh
     vault.save(uid(), "SSN", SSN)
     me = {**owner_cookie(), **ORIGIN}
     _, agent = auth.create_key(uid(), "Codex")
-    paused, spoken = [], []
+    paused, spoken, fail_pause = [], [], []
 
     async def fake_pause(creds, sid, on):
+        if fail_pause:
+            raise twilio_api.TwilioError("Twilio 500")
         paused.append(on)
 
     async def fake_speech(creds, voice, text):
@@ -144,6 +154,18 @@ def test_a_call_asks_the_user_and_the_value_is_stored_nowhere(monkeypatch, fresh
         await asyncio.sleep(0.05)
         assert spoken == ["1 2 3, 4 5, 6 7 8 9."] and fed == [(1600, 8000)]
         assert paused == [True, False]  # the recording paused while it was said, then went on
+        fail_pause.append(1)  # the recording cannot be paused: the secret is not said
+        p_fail = Params(label="SSN", how="say")
+        await asyncio.wait_for(b._tool_give_secret(p_fail), 2)
+        assert len(spoken) == 2 and len(fed) == 1 and "could not be given safely" in p_fail.results[0][0]
+        fail_pause.clear()
+        b._close_gates(True)  # the owner takes the call while a secret is being prepared: nothing is fed
+        p_owner = Params(label="SSN", how="say")
+        t = asyncio.create_task(b._tool_give_secret(p_owner))
+        await asyncio.sleep(0.05)
+        b._close_gates(False)
+        await asyncio.wait_for(t, 2)
+        fed.clear(); spoken.clear(); paused.clear()
         assert SSN not in p.results[0][0] and "[SSN]" in p.results[0][0]  # the model learns it was said, never what
         assert calls.masks(cid) == {"SSN": SSN}
         # a read-back reaches the transcript masked
@@ -153,7 +175,7 @@ def test_a_call_asks_the_user_and_the_value_is_stored_nowhere(monkeypatch, fresh
         # 2. a second time on the same call: already allowed, no question
         p2 = Params(label="SSN", how="say")
         await asyncio.wait_for(b._tool_give_secret(p2), 2)
-        assert len(spoken) == 2 and len(store.questions(cid)) == 1
+        assert len(spoken) == 1 and len(store.questions(cid)) == 1
 
         # 3. a detail that is not saved: the user types it for this call; a refusal gives nothing
         p3 = Params(label="Account PIN", how="say")
@@ -169,7 +191,7 @@ def test_a_call_asks_the_user_and_the_value_is_stored_nowhere(monkeypatch, fresh
         q = await wait_for_question()
         client.post(f"{API}/calls/{cid}/secret", json={"question_id": q["id"], "allow": False}, headers=me)
         await asyncio.wait_for(task, 2)
-        assert "was not given" in p4.results[0][0] and len(spoken) == 3
+        assert "was not given" in p4.results[0][0] and len(spoken) == 2
 
         # nothing that is stored, shown to an agent, or sent to the model holds a value
         stored = everything_stored().replace(store.saved_secrets(uid())[0]["secret"], "")

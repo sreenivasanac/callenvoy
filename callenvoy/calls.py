@@ -100,6 +100,7 @@ class Live:
     allowed: set = field(default_factory=set)  # labels the user allowed during the call
     typed: dict = field(default_factory=dict)  # label -> a value the user typed for this call (never stored)
     masks: dict = field(default_factory=dict)  # label -> value that was given: masked in everything heard after
+    paused_until: float = 0.0  # monotonic time until which the recording stays paused (the latest secret said)
     answered: float = 0.0  # time.time() of the answer: the recording starts there
 
 
@@ -590,8 +591,8 @@ async def answer_secret(user_id: str, call_id: str, question_id: str, allow: boo
     label = q["label"]
     if allow and q["kind"] == "secret":
         value = (value or "").strip()
-        if not 1 <= len(value) <= config.SECRET_MAX:
-            raise CallError(f"type the value (1 to {config.SECRET_MAX} characters)", field="value")
+        if not vault.acceptable(value):
+            raise CallError(f"type the value ({config.SECRET_MIN} to {config.SECRET_MAX} letters or digits)", field="value")
         live.typed[label] = value
     elif allow:
         live.allowed.add(label)
@@ -641,14 +642,35 @@ def masks(call_id: str | None) -> dict:
     return live.masks if live else {}
 
 
-async def pause_recording(call_id: str, paused: bool) -> None:
-    """Keeps a spoken secret out of the recording. Best effort: a call that is not recorded has nothing to pause."""
-    row = store.get_call(call_id)
-    if row and row["record"] and row["twilio_sid"] and not is_final(row):
-        try:
-            await twilio_api.pause_recording(keys.for_call(row), row["twilio_sid"], paused)
-        except Exception as e:  # noqa: BLE001
-            log.warning("recording %s failed for %s: %s", "pause" if paused else "resume", call_id, type(e).__name__)
+async def pause_recording(call_id: str, seconds: float) -> bool:
+    """Keeps a spoken secret out of the recording: pauses it now and resumes it `seconds` from now. A second
+    secret within that time moves the resume to its own end (the call owns the pause, not the bot: a key press
+    may change the bot meanwhile). False: the recording could not be paused, and the secret must not be said.
+    A call that is not recorded has nothing to pause (True)."""
+    row, live = store.get_call(call_id), LIVE.get(call_id)
+    if not row or not live or is_final(row):
+        return False
+    if not (row["record"] and row["twilio_sid"]):
+        return True
+    try:
+        await twilio_api.pause_recording(keys.for_call(row), row["twilio_sid"], True)
+    except Exception as e:  # noqa: BLE001
+        log.warning("recording pause failed for %s: %s", call_id, type(e).__name__)
+        return False
+    live.paused_until = time.monotonic() + seconds
+    spawn(call_id, _resume_recording(call_id, seconds))
+    return True
+
+
+async def _resume_recording(call_id: str, after: float) -> None:
+    await asyncio.sleep(after)
+    row, live = store.get_call(call_id), LIVE.get(call_id)
+    if not row or not live or is_final(row) or time.monotonic() < live.paused_until - 0.5:
+        return  # the call ended, or a later secret keeps the pause
+    try:
+        await twilio_api.pause_recording(keys.for_call(row), row["twilio_sid"], False)
+    except Exception as e:  # noqa: BLE001
+        log.warning("recording resume failed for %s: %s", call_id, type(e).__name__)
 
 
 async def ask(call_id: str, question: str, kind: str | None = None, label: str | None = None):
@@ -902,19 +924,22 @@ async def _dead_line(call_id: str) -> None:
     started = time.monotonic()
     await asyncio.sleep(config.SILENT_PICKUP_SECONDS)
     live = LIVE.get(call_id)
-    if not live or live.last_talk:
+    if not live:
         return
-    if live.bot:
-        await live.bot.say("Hello?")
-    await asyncio.sleep(config.DEAD_AIR_SECONDS - config.SILENT_PICKUP_SECONDS)
-    live, row = LIVE.get(call_id), store.get_call(call_id)
-    if live and row and not is_final(row) and not live.last_talk and live.last_sound < started:
-        event(call_id, "no sound on the line, hanging up")
-        store.update_call(call_id, outcome_result="no_human", outcome_summary="The call was answered, but there "
-                          "was no sound on the line.")
-        await stop_call(call_row(call_id))
-        return
-    await _quiet_watch(call_id)
+    if not live.last_talk:  # nobody has said a word yet
+        if live.bot:
+            await live.bot.say("Hello?")
+        await asyncio.sleep(config.DEAD_AIR_SECONDS - config.SILENT_PICKUP_SECONDS)
+        live, row = LIVE.get(call_id), store.get_call(call_id)
+        if not live or not row or is_final(row):
+            return
+        if not live.last_talk and live.last_sound < started:
+            event(call_id, "no sound on the line, hanging up")
+            store.update_call(call_id, outcome_result="no_human", outcome_summary="The call was answered, but there "
+                              "was no sound on the line.")
+            await stop_call(call_row(call_id))
+            return
+    await _quiet_watch(call_id)  # for the rest of the call, however it began
 
 
 QUIET_NOTE = ("The line has been silent for a while. If a person was talking with you, speak now: say why you are "

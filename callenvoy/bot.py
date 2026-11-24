@@ -627,21 +627,22 @@ class CallBot:
             await params.result_callback("It could not be said just now. Try once more.")
             return
         seconds = len(pcm) / 2 / rate
-        await calls.pause_recording(self.call_id, True)
+        if not await calls.pause_recording(self.call_id, seconds + config.SECRET_QUIET_SECONDS):
+            await params.result_callback("It could not be given safely just now. Say you cannot share that right "
+                                         "now, and carry on with the rest.")
+            return
+        if self.owner_has_call:  # the owner took the call while this was prepared: it is theirs to say now
+            await params.result_callback(OWNER_HAS_CALL, properties=NO_LLM)
+            return
         calls.gave_secret(self.call_id, label, value)
         self.gate.tones_until = time.monotonic() + seconds + 0.5  # their "uh-huh" must not cut it off
         await self.gate.feed(pcm, rate)
         calls.event(self.call_id, f"gave {label} by voice")
-        asyncio.create_task(self._resume_recording(seconds + config.SECRET_QUIET_SECONDS))
         await asyncio.sleep(seconds)  # it plays before the model speaks again
         await params.result_callback(
             f"The {label} was just said aloud to them, slowly. Do not say or repeat it yourself. If they read it "
             f"back, a correct read-back appears to you as [{label}]; any other number they say is wrong, and you "
             "call give_secret again.")
-
-    async def _resume_recording(self, after: float) -> None:
-        await asyncio.sleep(after)
-        await calls.pause_recording(self.call_id, False)
 
     async def _tool_connect_owner(self, params) -> None:
         if self.owner_has_call:

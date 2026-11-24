@@ -114,7 +114,7 @@ Some calls need a secret. CallEnvoy keeps it away from the AI model:
 - If the other side reads it back, it is masked (`[SSN]`) before the model or the transcript gets the words. The recording pauses while it is said.
 - A detail you did not save can be typed on the call's page when asked. It is used for that call and not stored.
 
-What still receives it: the voice provider gets the text in order to speak it, Twilio gets digits that are keyed in, and the business hears it. That is the least a phone call allows.
+What still receives it: the voice provider gets the text in order to speak it, Twilio gets digits that are keyed in, and the business hears it. If the business reads it back aloud, the hearing provider (Deepgram or OpenAI) hears that audio like the rest of the call; the read-back is masked before the AI model and the transcript get the words. That is the least a phone call allows.
 
 ## Two call modes
 

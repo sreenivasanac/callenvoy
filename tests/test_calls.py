@@ -411,3 +411,22 @@ def test_mode_can_change_while_the_call_runs():
     store.update_call(cid, status="completed")
     with pytest.raises(calls.CallError, match="ended"):
         run(calls.set_mode(uid(), cid, "transfer"))
+
+
+def test_quiet_watch_starts_also_when_the_other_side_spoke_at_once(monkeypatch):
+    v = place()
+    cid = v["id"]
+    store.update_call(cid, status="in_progress")
+    calls.LIVE[cid].last_talk = 5.0  # the menu started talking right at the pick-up
+    watched = []
+
+    async def no_sleep(seconds):
+        return None
+
+    async def watch(call_id):
+        watched.append(call_id)
+
+    monkeypatch.setattr(calls.asyncio, "sleep", no_sleep)
+    monkeypatch.setattr(calls, "_quiet_watch", watch)
+    run(calls._dead_line(cid))
+    assert watched == [cid] and not store.get_call(cid)["outcome_result"]
