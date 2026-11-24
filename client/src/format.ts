@@ -59,6 +59,7 @@ export function statusLabel(c: Call): { text: string; tone: Tone; live: boolean 
   }
   const byResult: Record<string, [string, Tone]> = {
     done: ['Done', 'done'],
+    partial: ['Partly done', 'hold'],
     not_done: ['Not done', 'neutral'],
     voicemail: ['Voicemail', 'neutral'],
     no_human: ['No person reached', 'neutral'],
@@ -112,6 +113,7 @@ export function modeLine(c: Call) {
 
 export const RESULT_TEXT: Record<string, string> = {
   done: 'Goal reached',
+  partial: 'Goal partly reached',
   not_done: 'Goal not reached',
   voicemail: 'Reached voicemail',
   no_human: 'No person answered',

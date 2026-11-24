@@ -37,7 +37,7 @@ export type Call = {
   owner: { state: OwnerState; via: 'app' | 'phone' | null; alert_until: string | null; unreachable: boolean };
   open_questions: Question[];
   answered_questions: Question[];
-  outcome: { result: 'done' | 'not_done' | 'voicemail' | 'no_human' | 'handed_to_owner'; summary: string; details: Record<string, unknown> | null } | null;
+  outcome: { result: 'done' | 'partial' | 'not_done' | 'voicemail' | 'no_human' | 'handed_to_owner'; summary: string; details: Record<string, unknown> | null } | null;
   talk_seconds: number | null;
   owner_seconds: number | null;
   error: string | null;
