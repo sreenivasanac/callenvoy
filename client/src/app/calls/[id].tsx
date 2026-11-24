@@ -1,7 +1,7 @@
 import { useLocalSearchParams } from 'expo-router';
 import { StyleSheet, View } from 'react-native';
 import { BackLink } from '../../components/BackLink';
-import { CallHeader, CallRecording, CallRequest, OutcomeCard, QuestionBox, TranscriptLog } from '../../components/CallDetail';
+import { CallHeader, CallRecording, CallRequest, ModeSwitch, OutcomeCard, QuestionBox, SecretBox, TranscriptLog } from '../../components/CallDetail';
 import { Loading } from '../../components/Loading';
 import { OwnerControls } from '../../components/OwnerControls';
 import { Screen } from '../../components/ui';
@@ -37,18 +37,26 @@ export default function CallScreen() {
         )}
       </Screen>
     );
+  // A request about a protected detail goes to the top of the page: only the user can answer it, here.
+  const requests = call.open_questions.filter((q) => q.kind);
   const side = inbound ? null : (
     <>
-      {call.open_questions.map((q) => (
-        <QuestionBox key={q.id} callId={call.id} q={q} />
-      ))}
+      {call.open_questions
+        .filter((q) => !q.kind)
+        .map((q) => (
+          <QuestionBox key={q.id} callId={call.id} q={q} />
+        ))}
       <OwnerControls call={call} callbackNumber={settings?.callback_number || null} />
+      <ModeSwitch call={call} />
     </>
   );
 
   return (
     <Screen>
       <BackLink />
+      {requests.map((q) => (
+        <SecretBox key={q.id} callId={call.id} q={q} />
+      ))}
       <CallHeader call={call} />
       {!inbound && (
         <View style={[s.detail, wide && s.detailWide]}>

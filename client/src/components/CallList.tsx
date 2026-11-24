@@ -1,7 +1,7 @@
 import { router } from 'expo-router';
 import { Pressable, StyleSheet, Text, View, type PressableStateCallbackType } from 'react-native';
 import type { Call } from '../api';
-import { callSeconds, duration, ownerLabel, phone, statusLabel, stepIndex, when } from '../format';
+import { callSeconds, costText, duration, ownerLabel, phone, statusLabel, stepIndex, when } from '../format';
 import { useGo, useNow } from '../hooks';
 import { border, callColumns, color, font, radius, space, useWide } from '../theme';
 import { CallLine } from './CallLine';
@@ -25,7 +25,7 @@ export function CallList({ calls }: { calls: Call[] }) {
   const now = useNow(1000, calls.some((c) => !c.finished));
   return (
     <View>
-      {wide && <TableHead titles={['Business', 'Status', 'Length', 'Started']} flex={callColumns} />}
+      {wide && <TableHead titles={['Business', 'Goal', 'Length', 'Cost', 'Started']} flex={callColumns} />}
       <View role="list">
         {calls.map((c, i) => (
           <CallRow key={c.id} call={c} now={now} first={i === 0} />
@@ -43,6 +43,7 @@ function CallRow({ call, now, first }: { call: Call; now: number; first: boolean
   const len = duration(callSeconds(call, now));
   const started = when(call.created_at);
   const sum = summary(call);
+  const cost = call.cost ? costText(call.cost) : ''; // an estimate; nothing for a call that never connected
   return (
     <View role="listitem" style={!first && s.divider}>
       <Pressable
@@ -67,7 +68,8 @@ function CallRow({ call, now, first }: { call: Call; now: number; first: boolean
               <StatusBadge call={call} />
             </View>
             <Text style={[s.small, { flex: callColumns[2] }]}>{len}</Text>
-            <Text style={[s.small, { flex: callColumns[3] }]}>{started}</Text>
+            <Text style={[s.small, { flex: callColumns[3] }]}>{cost}</Text>
+            <Text style={[s.small, { flex: callColumns[4] }]}>{started}</Text>
           </>
         ) : (
           <>
@@ -83,6 +85,7 @@ function CallRow({ call, now, first }: { call: Call; now: number; first: boolean
             <View style={s.narrowMeta}>
               <Text style={s.small}>{started}</Text>
               <Text style={s.small}>{len}</Text>
+              {cost ? <Text style={s.small}>{cost}</Text> : null}
             </View>
           </>
         )}
@@ -151,7 +154,7 @@ const s = StyleSheet.create({
   emptyTitle: { fontSize: font.size.l, fontWeight: font.weight.bold, marginBottom: space.xs },
   center: { textAlign: 'center' },
   emptyActions: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', gap: space.ml, marginTop: space.xl },
-  narrowMeta: { flexDirection: 'row', gap: space.l },
+  narrowMeta: { flexDirection: 'row', flexWrap: 'wrap', columnGap: space.l },
   live: { backgroundColor: color.card, borderWidth: border.thin, borderColor: color.line, borderRadius: radius.xl, padding: space.xxl, gap: space.m },
   liveAlert: { borderWidth: border.outline, borderColor: color.brand },
   liveHover: { borderColor: color.edge },
