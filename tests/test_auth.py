@@ -218,7 +218,7 @@ def test_recording_range_and_cache(client, monkeypatch, tmp_path):
     mp3 = bytes(range(256)) * 40
     fetched = []
 
-    async def fake_fetch(sid):
+    async def fake_fetch(creds, sid):
         fetched.append(sid)
         for i in range(0, len(mp3), 1000):
             yield mp3[i:i + 1000]
@@ -240,7 +240,7 @@ def test_recording_range_and_cache(client, monkeypatch, tmp_path):
     assert stat.S_IMODE(os.stat(config.RECORDINGS_DIR / f"RE{'a' * 32}.mp3").st_mode) == 0o600
     assert client.get("/callenvoy/r/" + "x" * 32).status_code == 404
 
-    async def broken(sid):
+    async def broken(creds, sid):
         raise twilio_api.TwilioError("Twilio 404")
         yield b""
 

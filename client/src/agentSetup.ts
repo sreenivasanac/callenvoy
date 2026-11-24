@@ -34,3 +34,31 @@ export function installPrompt(url: string, key: string) {
     'Then ask me what the first call should be.',
   ].join('\n');
 }
+
+export type SignInClient = 'claude_code' | 'claude' | 'chatgpt' | 'cursor' | 'codex';
+
+/** Set-up without a key: the agent opens the browser and the user allows it there (OAuth). `code` is what to copy. */
+export function signInSetup(url: string): Record<SignInClient, { steps: string[]; code: string }> {
+  return {
+    claude_code: {
+      code: `claude mcp add --scope user --transport http callenvoy ${url}`,
+      steps: ['Run this once in a terminal.', 'In Claude Code, type /mcp, choose callenvoy, then Authenticate.', 'Your browser opens this site. Press Allow.'],
+    },
+    claude: {
+      code: url,
+      steps: ['In Claude Desktop or on claude.ai, open Settings, then Connectors.', 'Choose Add custom connector and paste this address.', 'Press Connect. Your browser opens this site. Press Allow.'],
+    },
+    chatgpt: {
+      code: url,
+      steps: ['In ChatGPT, open Settings, then Connectors, and add a custom connector.', 'Paste this address as the MCP server address.', 'When ChatGPT asks you to sign in, your browser opens this site. Press Allow.'],
+    },
+    cursor: {
+      code: `{"mcpServers": {"callenvoy": {\n  "url": "${url}"\n}}}`,
+      steps: ['Add this to ~/.cursor/mcp.json.', 'Cursor asks you to sign in. Your browser opens this site. Press Allow.'],
+    },
+    codex: {
+      code: `codex mcp add callenvoy --url ${url}\ncodex mcp login callenvoy`,
+      steps: ['Run these two lines in a terminal.', 'Your browser opens this site. Press Allow.'],
+    },
+  };
+}

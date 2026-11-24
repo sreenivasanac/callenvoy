@@ -18,7 +18,7 @@ from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.frame_processor import FrameDirection
 from pipecat.tests.utils import run_test
 
-from callenvoy import bot, calls, store
+from callenvoy import bot, calls, keys, store
 
 from .conftest import CALL, run, uid
 
@@ -104,7 +104,7 @@ def make_bot(monkeypatch):
     def make(call_id):
         ws = MagicMock()
         ws.headers = {}
-        return bot.CallBot(ws, "MZ1", "CA1", "prompt", "voice", call_id=call_id)
+        return bot.CallBot(ws, "MZ1", "CA1", "prompt", keys.server(), voice="Hannah", call_id=call_id)
     return make
 
 
@@ -167,3 +167,61 @@ def test_resume_messages_closes_open_tool_calls():
     out = bot.resume_messages(msgs)
     assert [m.get("content") for m in out if m["role"] == "tool"] == ["done", "done"]
     assert out[-1] == {"role": "tool", "tool_call_id": "b", "content": "done"} and msgs[2]["content"] == "IN_PROGRESS"
+
+
+def test_voice_and_hearing_follow_the_keys():
+    """Without a Deepgram or Fish key a call hears and speaks through OpenAI; a saved key switches that part."""
+    from dataclasses import replace
+
+    from pipecat.services.deepgram.stt import DeepgramSTTService
+    from pipecat.services.fish.tts import FishAudioTTSService
+    from pipecat.services.openai.stt import OpenAIRealtimeSTTService
+    from pipecat.services.openai.tts import OpenAITTSService
+
+    full = keys.server()  # the test server has all four keys
+    assert isinstance(bot.hearing(full), DeepgramSTTService) and isinstance(bot.speech(full, "Rohan"), FishAudioTTSService)
+    two = replace(full, deepgram="", fish="")  # a user with Twilio + OpenAI only
+    assert two.hearing == "openai" and two.voice_provider == "openai"
+    assert isinstance(bot.hearing(two), OpenAIRealtimeSTTService)
+    assert isinstance(bot.hearing(two, own_vad=False), OpenAIRealtimeSTTService)
+    tts = bot.speech(two, "Rohan")  # a Fish voice name on an account without Fish: the OpenAI default
+    assert isinstance(tts, OpenAITTSService) and tts._settings.voice == "marin"
+    assert bot.speech(two, "Cedar")._settings.voice == "cedar"
+    assert isinstance(bot.speech(replace(two, fish="f"), "Cedar"), FishAudioTTSService)
+
+
+def test_openai_hearing_holds_audio_until_the_session_is_ready():
+    """Audio and a commit that arrive before OpenAI has our session settings are sent, in order, once it has."""
+    from pipecat.services.openai.stt import OpenAIRealtimeSTTService
+
+    for name in ("_send_audio", "_commit_audio_buffer"):  # the Pipecat internals the class builds on
+        assert callable(getattr(OpenAIRealtimeSTTService, name))
+    h = bot.OpenAIHearing(api_key="sk-test")
+    assert h._session_ready is False
+    sent = []
+
+    async def ws_send(message):
+        sent.append(message["type"])
+
+    async def resample(audio, _from, _to):
+        return audio
+
+    h._ws_send, h._resampler.resample = ws_send, resample
+
+    async def go():
+        await h._send_audio(b"\x01\x00" * 80)
+        await h._send_audio(b"\x02\x00" * 80)
+        await h._commit_audio_buffer()  # the first words ended before the session was ready
+        assert sent == []
+        h._session_ready = True
+        await h._send_audio(b"\x03\x00" * 80)
+        assert sent == ["input_audio_buffer.append"] * 2 + ["input_audio_buffer.commit", "input_audio_buffer.append"]
+        await h._commit_audio_buffer()
+        assert sent[-1] == "input_audio_buffer.commit" and h._held == []
+        # the session becomes ready between two audio frames and the next thing is a commit: held audio goes first
+        h._session_ready, sent[:] = False, []
+        await h._send_audio(b"\x04\x00" * 80)
+        h._session_ready = True
+        await h._commit_audio_buffer()
+        assert sent == ["input_audio_buffer.append", "input_audio_buffer.commit"]
+    run(go())

@@ -2,14 +2,15 @@ import { usePathname } from 'expo-router';
 import { StyleSheet, Text, View } from 'react-native';
 import type { Call } from '../api';
 import { useCalls, useGo, useNow } from '../hooks';
-import { color, font, radius, space, useWide } from '../theme';
-import { Button } from './ui';
+import { border, color, font, radius, space, useWide } from '../theme';
+import { Button, PULSE } from './ui';
 
 export function secondsLeft(call: Call, now: number) {
   return call.owner.alert_until ? Math.max(0, Math.ceil((Date.parse(call.owner.alert_until) - now) / 1000)) : null;
 }
 
-/** Green banner on every screen while a call is alerting the owner. */
+/** The banner on every screen while a call is alerting the owner: an accent frame, a pulsing dot, and the green
+ *  answer button. Calm colours, but nothing else on the page looks like it. */
 export function AlertBanner() {
   const { calls, acknowledge } = useCalls();
   const go = useGo();
@@ -28,19 +29,17 @@ export function AlertBanner() {
   };
   return (
     <View style={s.banner}>
+      <View style={s.dot} aria-hidden {...PULSE} />
       <View style={s.textBox}>
         {/* Only the fixed text is announced; the seconds stay out of the live region. */}
         <Text role="alert" style={s.title}>
           A person answered at {call.business}
         </Text>
-        <Text style={s.sub}>{(transfer ? 'Join now' : 'Listen in') + (phoneNext ? `, or your phone rings in ${left} s.` : '.')}</Text>
+        <Text style={s.sub}>{(transfer ? 'They are waiting for you' : 'The AI is talking to them') + (phoneNext ? `. Your phone rings in ${left} s.` : '.')}</Text>
       </View>
       <View style={[s.actions, !wide && s.actionsNarrow]}>
         <View style={!wide && s.grow}>
-          <Button label={transfer ? 'Join now' : 'Listen'} kind="dark" onPress={open} full />
-        </View>
-        <View style={!wide && s.grow}>
-          <Button label="Open call" kind="outline" onPress={open} full />
+          <Button label={transfer ? 'Join now' : 'Listen'} kind="go" onPress={open} full />
         </View>
       </View>
     </View>
@@ -52,16 +51,18 @@ const s = StyleSheet.create({
     flexDirection: 'row',
     flexWrap: 'wrap',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: space.ml,
-    backgroundColor: color.ok,
+    gap: space.l,
+    backgroundColor: color.card,
+    borderWidth: border.outline,
+    borderColor: color.brand,
     borderRadius: radius.xl,
     paddingVertical: space.l,
     paddingHorizontal: space.xl,
   },
-  textBox: { flexShrink: 1 },
-  title: { color: color.okInk, fontSize: font.size.xl, fontWeight: font.weight.bold },
-  sub: { color: color.okInk, fontSize: font.size.m, fontWeight: font.weight.semi },
+  dot: { width: space.ml, height: space.ml, borderRadius: radius.pill, backgroundColor: color.brand },
+  textBox: { flex: 1, minWidth: 200 },
+  title: { fontFamily: font.display, color: color.fg, fontSize: font.size.xl, fontWeight: font.weight.bold },
+  sub: { color: color.soft, fontSize: font.size.base, fontVariant: ['tabular-nums'] },
   actions: { flexDirection: 'row', gap: space.sm },
   actionsNarrow: { width: '100%' },
   grow: { flex: 1 },

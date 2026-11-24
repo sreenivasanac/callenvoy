@@ -1,10 +1,13 @@
 // Console sign-in by a one-time email link (plan round 2, B1; round 3 B1). The session is an HttpOnly cookie.
 import { router } from 'expo-router';
 import { useState } from 'react';
-import { Text } from 'react-native';
+import { StyleSheet, Text, View } from 'react-native';
 import { api, ApiError } from '../api';
 import { useNow, useSession } from '../hooks';
-import { Button, CopyBlock, Gate, Note, Stack, T, TextField, text } from './ui';
+import { space } from '../theme';
+import { loadLocal, saveLocal } from '../platform/storage';
+import { AFTER_SIGNIN } from './Connect';
+import { Button, CopyBlock, Gate, Note, Stack, T, TextField, TextLink, text } from './ui';
 
 const RESEND_SECONDS = 30;
 const SIGNIN_COMMAND = 'uv run python -m callenvoy.signin';
@@ -86,6 +89,12 @@ export function SignInForm({ fieldId }: { fieldId: string }) {
       />
       <Button label={busy ? 'Sending...' : wait ? `Send sign-in link (${wait} s)` : 'Send sign-in link'} busy={busy} disabled={wait > 0} onPress={send} full />
       {me?.signups_open ? <T v="fine">New here? The same link makes your account.</T> : null}
+      <View style={s.legal}>
+        <T v="fine">By signing in you agree to the</T>
+        <TextLink label="terms" onPress={() => router.push('/terms')} />
+        <T v="fine">and the</T>
+        <TextLink label="privacy page" onPress={() => router.push('/privacy')} />
+      </View>
     </Stack>
   );
 }
@@ -107,7 +116,10 @@ export function SignInLink({ token }: { token: string | undefined }) {
         setVerified(true);
       }
       if (await reload()) {
-        router.replace('/');
+        // Back to an agent's sign-in request that asked for this sign-in (only that page: never an outside address).
+        const next = loadLocal(AFTER_SIGNIN);
+        saveLocal(AFTER_SIGNIN, '');
+        router.replace((next?.startsWith('/connect?request=') ? next : '/') as '/');
         return;
       }
       setError('You are signed in, but the console could not load. Check your connection and try again.');
@@ -138,3 +150,7 @@ export function SignInLink({ token }: { token: string | undefined }) {
     </Gate>
   );
 }
+
+const s = StyleSheet.create({
+  legal: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', columnGap: space.xs },
+});

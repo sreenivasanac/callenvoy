@@ -6,6 +6,7 @@ import { phone, toE164 } from '../format';
 import { useCallerId, useGo } from '../hooks';
 import { color, space, useWide } from '../theme';
 import { CallOptions, checkNumbers, MODE_OPTIONS, type Options } from './CallOptions';
+import { PROVIDER_COST } from './Providers';
 import { Button, Card, Note, Segmented, Stack, T, TextField, TextLink, text } from './ui';
 import { VoicePicker } from './VoicePicker';
 
@@ -49,6 +50,7 @@ export function CallForm({ config, settings, demo }: { config: Config; settings:
   const [more, setMore] = useState(false);
   const [errors, setErrors] = useState<Errors>({});
   const [busy, setBusy] = useState(false);
+  const [needKeys, setNeedKeys] = useState(false); // the server refused for missing keys: link to them
   const set = <K extends keyof typeof f>(k: K) => (v: (typeof f)[K]) => setF((x) => ({ ...x, [k]: v }));
 
   const needsPhone = f.reach === 'phone' && (f.mode === 'transfer' || !!f.connect_when.trim() || f.listen_in);
@@ -97,6 +99,7 @@ export function CallForm({ config, settings, demo }: { config: Config; settings:
       const name = err instanceof ApiError && err.field ? (TO_SETTING[err.field] ?? err.field) : '';
       const field = name in f ? (name as keyof Errors) : 'form';
       setErrors({ [field]: err instanceof Error ? err.message : 'The call could not be placed.' });
+      setNeedKeys(err instanceof ApiError && (err.code === 'keys_needed' || err.code === 'demo_limit'));
       if (field !== 'form' && !['to', 'business', 'goal', 'facts', 'mode'].includes(field)) setMore(true);
     }
   };
@@ -108,11 +111,18 @@ export function CallForm({ config, settings, demo }: { config: Config; settings:
       : 'The AI does the whole call. You can still listen or join.';
   const reachHelp = `App: an alert in this console and on your devices. Phone: rings ${settings.callback_number ? phone(settings.callback_number) : 'your callback number'}.`;
 
+  // Without own keys only the demo line can be called: say so before the user fills in a form that would fail.
+  const keys = config.keys;
+  const demoOnly = !!keys && !keys.ready;
+  if (demoOnly && (!demo || keys.demo_calls_left <= 0)) return <KeysNeeded left={keys.demo_calls_left} named={named} />;
+
   return (
     <Card label="New call">
       <Stack>
         <View>
-          <T v="h2">New call</T>
+          <T v="h1" level={2}>
+            New call
+          </T>
           <T v="muted">Every option starts from your Settings.</T>
         </View>
         {!named && (
@@ -124,7 +134,11 @@ export function CallForm({ config, settings, demo }: { config: Config; settings:
           </Note>
         )}
         {demo && (
-          <Note kind="hint">This is CallEnvoy's demo line: a test phone line that answers like a business, with a menu and a short hold. Press Call now to try it.</Note>
+          <Note kind="hint">
+            {`This is CallEnvoy's demo line: a test phone line that answers like a business, with a menu, a short hold, and a billing agent. Press Call now to try it.${
+              demoOnly ? ` It is free: ${keys.demo_calls_left} demo call${keys.demo_calls_left === 1 ? '' : 's'} left.` : ''
+            }`}
+          </Note>
         )}
         {count > 0 && <Note kind="errsum">{`Fix ${count} field${count > 1 ? 's' : ''} to place the call.`}</Note>}
         <TextField
@@ -134,7 +148,8 @@ export function CallForm({ config, settings, demo }: { config: Config; settings:
           inputMode="tel"
           autoComplete="off"
           placeholder="+1 (555) 555-0100"
-          help="US or Canada numbers only."
+          help={demoOnly ? 'The demo line. Other numbers need your own Twilio and OpenAI keys.' : 'US or Canada numbers only.'}
+          editable={!demoOnly}
           error={errors.to}
         />
         <TextField label="Business" value={f.business} onChangeText={set('business')} placeholder="For example Northstar Internet" maxLength={120} error={errors.business} />
@@ -223,6 +238,7 @@ export function CallForm({ config, settings, demo }: { config: Config; settings:
         )}
 
         {errors.form && <Note kind="errsum">{errors.form}</Note>}
+        {needKeys && <TextLink label="Add your keys in Settings" onPress={() => go('/settings?focus=keys')} />}
         <View style={[s.foot, wide && s.footWide]}>
           <Button label={busy ? 'Calling...' : 'Call now'} size="big" busy={busy} disabled={!named} onPress={submit} full={!wide} />
           <T v="fine">The number is dialed right away.</T>
@@ -232,7 +248,37 @@ export function CallForm({ config, settings, demo }: { config: Config; settings:
   );
 }
 
+/** New call without own keys, and no demo call filled in (or none left): the two things the user can do. */
+function KeysNeeded({ left, named }: { left: number; named: boolean }) {
+  const go = useGo();
+  return (
+    <Card label="New call">
+      <Stack>
+        <View>
+          <T v="h1" level={2}>
+            {left > 0 ? 'Try the demo line first' : 'Add your keys to place calls'}
+          </T>
+          <T v="soft">
+            {left > 0
+              ? `You have ${left} free demo call${left === 1 ? '' : 's'}. The demo line is a test phone line with a menu, a short hold, and a billing agent. It shows a whole call in about two minutes.`
+              : 'You have used your free demo calls.'}
+          </T>
+        </View>
+        <Note kind="hint">
+          <Text style={text.base}>Real numbers need your own Twilio and OpenAI keys. {PROVIDER_COST}</Text>
+        </Note>
+        {left > 0 && !named ? <T v="fine">Save your name first (on the Calls page, or in Settings): the AI says who it calls for.</T> : null}
+        <View style={s.choices}>
+          {left > 0 ? <Button label="Call the demo line" disabled={!named} onPress={() => go('/new?demo=1')} /> : null}
+          <Button label="Add my keys" kind={left > 0 ? 'secondary' : 'primary'} onPress={() => go('/settings?focus=keys')} />
+        </View>
+      </Stack>
+    </Card>
+  );
+}
+
 const s = StyleSheet.create({
+  choices: { flexDirection: 'row', flexWrap: 'wrap', gap: space.ml },
   foot: { gap: space.l },
   footWide: { flexDirection: 'row', alignItems: 'center' },
   blockedText: { color: color.blockedInk },

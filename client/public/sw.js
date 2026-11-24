@@ -1,6 +1,6 @@
 // CallEnvoy service worker: shows alerts and opens the call on click.
 // No fetch handler and no cache, so it can never serve an old console.
-const BASE = '/callenvoy';
+const BASE = ''; // the console is at the root of its host
 
 self.addEventListener('push', (event) => {
   let d = {};

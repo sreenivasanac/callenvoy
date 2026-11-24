@@ -175,9 +175,15 @@ export function AudioCheck() {
   const [level, setLevel] = useState(0);
   const [on, setOn] = useState(false);
   const stop = useRef<(() => void) | null>(null);
+  const asking = useRef(false); // a check is waiting for the browser's permission answer
+  const alive = useRef(true);
   useEffect(() => {
+    alive.current = true; // set again on a second mount (React strict mode)
     void micPermission().then(setState);
-    return () => stop.current?.();
+    return () => {
+      alive.current = false;
+      stop.current?.();
+    };
   }, []);
 
   const toggle = async () => {
@@ -188,8 +194,12 @@ export function AudioCheck() {
       setLevel(0);
       return;
     }
+    if (asking.current) return;
+    asking.current = true;
     const r = await checkMic(setLevel);
-    if (typeof r === 'string') return setState(r);
+    asking.current = false;
+    if (typeof r === 'string') return void (alive.current && setState(r));
+    if (!alive.current) return r.stop(); // the page closed while the browser asked: do not keep the microphone
     stop.current = r.stop;
     setState('granted');
     setOn(true);

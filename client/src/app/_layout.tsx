@@ -17,7 +17,14 @@ import {
   useSettingsState,
 } from '../hooks';
 import { closeNotification, setupAlerts, showNotification, startRing } from '../platform/alerts';
-import { color } from '../theme';
+import { installAnalytics } from '../platform/analytics';
+import { installTheme } from '../platform/head';
+import { color, themeCss } from '../theme';
+
+installTheme(themeCss()); // before the first render: every colour in the styles is a CSS variable
+installAnalytics(); // anonymous visit counts on the operator's own host only
+
+const PUBLIC = ['/examples', '/privacy', '/terms'];
 
 export default function RootLayout() {
   const session = useSessionState();
@@ -26,8 +33,8 @@ export default function RootLayout() {
   return (
     <SessionContext.Provider value={session}>
       <View style={s.root}>
-        {path === '/signin' ? (
-          <Slot /> // the emailed link's page, signed in or not
+        {path === '/signin' || path === '/connect' || PUBLIC.includes(path) ? (
+          <Slot /> // pages that show signed in or not: the emailed link, an agent's sign-in, the public pages
         ) : !me ? (
           <Gate>
             <Loading error={session.error} retry={() => void session.reload()} label="Loading" />

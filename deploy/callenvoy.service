@@ -1,15 +1,15 @@
-# systemd unit for CallEnvoy. Installed as "holdforme.service" (same unit name as before, one thing to restart).
-# One worker only: live call state is in memory.
+# systemd unit for CallEnvoy: /etc/systemd/system/callenvoy.service
+# One worker only: live call state is in memory. Change User and the paths to your own.
 [Unit]
-Description=CallEnvoy (holdforme)
+Description=CallEnvoy
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 User=agent
-WorkingDirectory=/home/agent/apps/holdforme
-EnvironmentFile=/home/agent/apps/holdforme/.env
-ExecStart=/home/agent/.local/bin/uv run --frozen --no-dev uvicorn callenvoy.main:app --host 127.0.0.1 --port 3020 --no-access-log
+WorkingDirectory=/home/agent/apps/callenvoy
+EnvironmentFile=/home/agent/apps/callenvoy/.env
+ExecStart=/home/agent/.local/bin/uv run --frozen --no-dev uvicorn callenvoy.main:app --host 127.0.0.1 --port 3021 --no-access-log
 Restart=always
 RestartSec=3
 UMask=0077

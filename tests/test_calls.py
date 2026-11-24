@@ -48,11 +48,12 @@ def test_create_call_sends_a_real_form_body(monkeypatch):
         return httpx.Response(201, json={"sid": "CA1"})
 
     monkeypatch.setattr(twilio_api.httpx, "AsyncClient", partial(httpx.AsyncClient, transport=httpx.MockTransport(handler)))
-    assert run(REAL_CREATE(to="+14155550123", url="u", status_callback="s", record=False)) == "CA1"
+    from callenvoy import keys
+    assert run(REAL_CREATE(keys.server(), to="+14155550123", url="u", status_callback="s", record=False)) == "CA1"
     assert sent["type"] == "application/x-www-form-urlencoded" and sent["form"]["To"] == ["+14155550123"]
     assert sent["form"]["StatusCallbackEvent"] == ["initiated", "ringing", "answered", "completed"]
     assert not set(sent["form"]) & {"Record", "RecordingChannels", "RecordingStatusCallback"}
-    run(REAL_CREATE(to="+14155550123", url="u", status_callback="s", record=True))
+    run(REAL_CREATE(keys.server(), to="+14155550123", url="u", status_callback="s", record=True))
     assert sent["form"]["RecordingChannels"] == ["dual"] and sent["form"]["Record"] == ["true"]
     assert sent["form"]["Trim"] == ["do-not-trim"]  # transcript `at` times need the leading silence
 
@@ -110,18 +111,6 @@ def test_from_own_refused_until_verified(fresh):
     fresh.verified.add("+14155550199")
     v = place(**{"from": "own"})
     assert v["calling_number"] == "+14155550199" and fresh.created[-1]["from_number"] == "+14155550199"
-
-
-def test_limits_refuse_third_call_and_over_cap():
-    place()
-    place()
-    with pytest.raises(calls.CallError, match="service is busy") as e:
-        place()
-    assert e.value.status == 429 and "running" not in str(e.value)  # nothing about other users' calls
-    for r in store.live_calls():
-        store.update_call(r["id"], status="completed", talk_seconds=config.DAILY_MINUTE_CAP * 60)
-    with pytest.raises(calls.CallError, match="service's daily limit"):
-        place()
 
 
 def test_watchdog_rules():
@@ -198,8 +187,8 @@ def test_late_dialing_does_not_overwrite_a_final_status(fresh, monkeypatch):
 
     real = twilio_api.create_call
 
-    async def fast_fail(**kw):
-        sid = await real(**kw)
+    async def fast_fail(creds, **kw):
+        sid = await real(creds, **kw)
         cid = kw["url"].rsplit("/", 1)[1]
         await calls.on_status(cid, {"CallStatus": "busy", "CallSid": sid})
         return sid
@@ -251,9 +240,9 @@ def test_caller_id_cache(fresh, monkeypatch):
     asked = []
     real = fresh.caller_id_verified
 
-    async def counting(number):
+    async def counting(creds, number):
         asked.append(number)
-        return await real(number)
+        return await real(creds, number)
 
     from callenvoy import twilio_api
 
@@ -310,3 +299,17 @@ def test_key_press_then_no_new_stream_closes_the_call(fresh):
         await asyncio.sleep(0.7)
         assert old.summaries == 1 and cid not in calls.LIVE and store.get_call(cid)["ws_token"] is None
     run(go())
+
+
+def test_hang_up_while_dialing_hangs_up_the_returned_call(monkeypatch, fresh):
+    """A hang-up that lands while Twilio's dial request is pending: the call Twilio then returns is hung up."""
+    from callenvoy import twilio_api
+
+    async def slow_create(creds, **kw):
+        row = store.live_calls()[0]
+        await calls.hang_up(uid(), row["id"])  # the user hangs up before Twilio has answered the request
+        return "CAlate"
+
+    monkeypatch.setattr(twilio_api, "create_call", slow_create)
+    v = place()
+    assert v["status"] == "canceled" and ("CAlate", {"hang_up": True}) in fresh.updated

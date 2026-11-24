@@ -1,10 +1,11 @@
 import { router } from 'expo-router';
 import { Pressable, StyleSheet, Text, View, type PressableStateCallbackType } from 'react-native';
 import type { Call } from '../api';
-import { callSeconds, duration, ownerLabel, phone, statusLabel, when } from '../format';
+import { callSeconds, duration, ownerLabel, phone, statusLabel, stepIndex, when } from '../format';
 import { useGo, useNow } from '../hooks';
-import { border, callColumns, color, font, space, useWide } from '../theme';
-import { Button, Card, Pill, TableHead, text } from './ui';
+import { border, callColumns, color, font, radius, space, useWide } from '../theme';
+import { CallLine } from './CallLine';
+import { Button, Pill, TableHead, text } from './ui';
 
 /** Status pill plus the owner-state pill of a call. */
 export function StatusBadge({ call }: { call: Call }) {
@@ -14,7 +15,7 @@ export function StatusBadge({ call }: { call: Call }) {
     <View style={s.badges}>
       {call.direction === 'inbound' && <Pill label="Incoming" tone="info" />}
       <Pill label={st.text} tone={st.tone} live={st.live} />
-      {owner && <Pill label={owner.text} tone={owner.tone} />}
+      {owner && <Pill label={owner.text} tone={owner.tone} live={owner.live} />}
     </View>
   );
 }
@@ -79,9 +80,10 @@ function CallRow({ call, now, first }: { call: Call; now: number; first: boolean
                 {sum}
               </Text>
             ) : null}
-            <Text style={s.small}>
-              {started} · {len}
-            </Text>
+            <View style={s.narrowMeta}>
+              <Text style={s.small}>{started}</Text>
+              <Text style={s.small}>{len}</Text>
+            </View>
           </>
         )}
       </Pressable>
@@ -89,53 +91,34 @@ function CallRow({ call, now, first }: { call: Call; now: number; first: boolean
   );
 }
 
-/** A live call at the top of Calls: where it is, how long, and Open. */
+/** A live call on Calls: who, the state, the time, and the call line. The whole card opens the call.
+ *  A call that waits for the user gets the accent frame. */
 export function LiveCallCard({ call }: { call: Call }) {
   const now = useNow();
   const go = useGo();
-  const wide = useWide();
-  const name = (
-    <View style={s.liveText}>
-      <Text style={s.biz} numberOfLines={1}>
-        {call.business}
-      </Text>
-      <Text style={s.small}>{phone(call.number)}</Text>
-    </View>
-  );
-  const timer = (
-    <Text style={s.timer} aria-label="Call length">
-      {duration(callSeconds(call, now))}
-    </Text>
-  );
-  const open = (
-    <View>
-      <Button label="Open" a11yLabel={`Open the call to ${call.business}`} size="small" onPress={() => go(`/calls/${call.id}`)} />
-    </View>
-  );
+  const st = statusLabel(call);
+  const needsYou = call.owner.state === 'alerting' || call.owner.state === 'ringing';
   return (
-    <Card label={`Live call: ${call.business}`} style={s.live}>
-      {wide ? (
-        <View style={s.liveRow}>
-          {name}
-          <StatusBadge call={call} />
-          {timer}
-          {open}
+    <Pressable
+      role="link"
+      aria-label={`Open the call to ${call.business}, ${st.text}`}
+      onPress={() => go(`/calls/${call.id}`)}
+      style={(p: PressableStateCallbackType & { hovered?: boolean }) => [s.live, needsYou && s.liveAlert, (p.hovered || p.pressed) && !needsYou && s.liveHover]}
+    >
+      <View style={s.liveRow}>
+        <View style={s.liveText}>
+          <Text style={s.liveBiz} numberOfLines={1}>
+            {call.business}
+          </Text>
+          <Text style={s.small}>{phone(call.number)}</Text>
         </View>
-      ) : (
-        <View style={s.liveStack}>
-          <View style={s.liveRow}>
-            {name}
-            {timer}
-          </View>
-          <View style={s.liveRow}>
-            <View style={s.fill}>
-              <StatusBadge call={call} />
-            </View>
-            {open}
-          </View>
-        </View>
-      )}
-    </Card>
+        <Text style={s.timer} aria-label="Call length">
+          {duration(callSeconds(call, now))}
+        </Text>
+      </View>
+      <StatusBadge call={call} />
+      {call.direction === 'outbound' ? <CallLine at={stepIndex(call)} tone={st.tone} short /> : null}
+    </Pressable>
   );
 }
 
@@ -160,17 +143,20 @@ const s = StyleSheet.create({
   cols: { flexDirection: 'row', alignItems: 'center', gap: space.ml },
   divider: { borderTopWidth: border.thin, borderTopColor: color.line },
   row: { paddingVertical: space.ml, paddingHorizontal: space.xs, gap: space.xxs },
-  hover: { backgroundColor: color.card2 },
+  hover: { backgroundColor: color.card2, borderRadius: radius.m },
   narrowTop: { flexDirection: 'row', alignItems: 'flex-start', gap: space.ml },
   biz: { color: color.fg, fontSize: font.size.body, fontWeight: font.weight.semi },
-  small: { color: color.muted, fontSize: font.size.m, fontVariant: ['tabular-nums'] },
+  small: { color: color.muted, fontSize: font.size.s, fontVariant: ['tabular-nums'] },
   empty: { alignItems: 'center', paddingVertical: space.x4 - space.xs, paddingHorizontal: space.ml },
   emptyTitle: { fontSize: font.size.l, fontWeight: font.weight.bold, marginBottom: space.xs },
   center: { textAlign: 'center' },
   emptyActions: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', gap: space.ml, marginTop: space.xl },
-  live: { borderColor: color.okLine, paddingVertical: space.l },
-  liveRow: { flexDirection: 'row', alignItems: 'center', gap: space.l },
-  liveStack: { gap: space.ml },
-  liveText: { flex: 1 },
-  timer: { color: color.fg, fontSize: font.size.big, fontWeight: font.weight.bold, fontVariant: ['tabular-nums'] },
+  narrowMeta: { flexDirection: 'row', gap: space.l },
+  live: { backgroundColor: color.card, borderWidth: border.thin, borderColor: color.line, borderRadius: radius.xl, padding: space.xxl, gap: space.m },
+  liveAlert: { borderWidth: border.outline, borderColor: color.brand },
+  liveHover: { borderColor: color.edge },
+  liveRow: { flexDirection: 'row', alignItems: 'flex-start', gap: space.l },
+  liveText: { flex: 1, minWidth: 0 },
+  liveBiz: { fontFamily: font.display, color: color.fg, fontSize: font.size.big, fontWeight: font.weight.bold },
+  timer: { fontFamily: font.display, color: color.fg, fontSize: font.size.h2, fontWeight: font.weight.bold, fontVariant: ['tabular-nums'] },
 });

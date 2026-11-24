@@ -4,13 +4,18 @@ from callenvoy import config
 
 
 def test_voices():
-    assert len(config.VOICES) == 10
+    fish, openai = config.voices("fish"), config.voices("openai")
+    assert len(fish) == 10 and len(openai) == 6 and len(config.VOICES) == 16
     names = [v["name"] for v in config.VOICES]
-    assert len(set(names)) == 10
+    assert len(set(names)) == 16  # one setting holds either kind, so no name may repeat
     assert config.DEFAULT_VOICE in names
-    indian = [v for v in config.VOICES if v["accent"] == "Indian English"]
+    indian = [v for v in fish if v["accent"] == "Indian English"]
     assert sorted(v["gender"] for v in indian) == ["female", "male", "male"]
-    assert all(len(v["reference_id"]) == 32 for v in config.VOICES)
+    assert all(len(v["reference_id"]) == 32 for v in fish)
+    # a voice the call's provider does not have falls back to that provider's default
+    assert config.voice("Rohan", "fish")["name"] == "Rohan" and config.voice("Rohan", "openai")["name"] == "Marin"
+    assert config.voice("Cedar", "openai")["reference_id"] == "cedar" and config.voice("Cedar", "fish")["name"] == "Hannah"
+    assert config.voice(None, "openai")["name"] == "Marin"
 
 
 def test_voice_samples():

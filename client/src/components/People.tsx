@@ -3,16 +3,14 @@ import { useCallback, useEffect, useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import { api, type AdminUser } from '../api';
 import { ago, day } from '../format';
-import { useSettings } from '../hooks';
 import { border, color, font, peopleColumns, space, useWide } from '../theme';
 import { Loading } from './Loading';
 import { Button, Card, Note, Pill, Sheet, Stack, SwitchRow, T, TableHead, text } from './ui';
 
-const HEADERS = ['Person', 'Joined', 'Last active', 'Calls', 'Minutes', 'State', ''];
+const HEADERS = ['Person', 'Joined', 'Last active', 'Calls', 'Minutes', 'State and keys', ''];
 
 export function PeopleCard() {
   const wide = useWide();
-  const { config } = useSettings();
   const [data, setData] = useState<{ signups_open: boolean; users: AdminUser[] } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -43,20 +41,19 @@ export function PeopleCard() {
     setBusy(null);
   };
 
-  const cap = config?.limits.daily_minute_cap;
   const today = data?.users.reduce((n, u) => n + u.minutes_today, 0) ?? 0;
   return (
     <Card label="People">
       <Stack>
         <View>
-          <T v="h2">People</T>
+          <T v="h1">People</T>
           <T v="muted">You can see usage only. Calls, transcripts and recordings of other people are private.</T>
         </View>
         {!data ? (
           <Loading error={error} retry={() => void load()} label="Loading people" />
         ) : (
           <>
-            <Text style={text.body}>{cap ? `${today} of ${cap} minutes used today` : `${today} minutes used today`}</Text>
+            <Text style={text.body}>{`${data.users.length} account${data.users.length === 1 ? '' : 's'}. ${today} call minutes today, all accounts together.`}</Text>
             <SwitchRow
               title="New sign-ups"
               help={data.signups_open ? 'On: anyone with an email address can make an account.' : 'Off: only people who already have an account can sign in.'}
@@ -97,12 +94,13 @@ export function PeopleCard() {
 
 function PersonRow({ u, first, busy, onToggle, onRemove }: { u: AdminUser; first: boolean; busy: boolean; onToggle: () => void; onRemove: () => void }) {
   const wide = useWide();
-  const state = u.disabled ? (
-    <Pill label="Disabled" />
-  ) : u.live_calls ? (
-    <Pill label="On a call" tone="ok" live />
-  ) : (
-    <Pill label="Active" tone="ok" />
+  // Whose keys place this person's calls: the server's (the admin), their own, or none yet (demo line only).
+  const keys = u.is_admin ? 'Server keys' : u.own_keys ? 'Own keys' : 'Demo only';
+  const state = (
+    <View style={s.pills}>
+      {u.disabled ? <Pill label="Disabled" tone="bad" /> : u.live_calls ? <Pill label="On a call" tone="ok" live /> : <Pill label="Active" tone="done" />}
+      <Pill label={keys} tone={u.own_keys || u.is_admin ? 'info' : 'neutral'} />
+    </View>
   );
   const who = (
     <View>
@@ -114,7 +112,7 @@ function PersonRow({ u, first, busy, onToggle, onRemove }: { u: AdminUser; first
     </View>
   );
   const last = u.last_seen_at ? ago(u.last_seen_at) : 'never';
-  const minutes = `${u.minutes} min · ${u.minutes_today} today`;
+  const minutes = `${u.minutes} min, ${u.minutes_today} today`;
   const actions = u.is_admin ? null : (
     <View style={s.actions}>
       <Button
@@ -125,7 +123,7 @@ function PersonRow({ u, first, busy, onToggle, onRemove }: { u: AdminUser; first
         busy={busy}
         onPress={onToggle}
       />
-      <Button label="Remove" a11yLabel={`Remove ${u.email}`} kind="danger" size="small" disabled={busy} onPress={onRemove} />
+      <Button label="Remove" a11yLabel={`Remove ${u.email}`} kind="outline" size="small" disabled={busy} onPress={onRemove} />
     </View>
   );
   return (
@@ -142,12 +140,10 @@ function PersonRow({ u, first, busy, onToggle, onRemove }: { u: AdminUser; first
         </>
       ) : (
         <>
-          <View style={s.narrowTop}>
-            <View style={s.fill}>{who}</View>
-            {state}
-          </View>
-          <Text style={s.small}>{`Joined ${day(u.created_at)} · last active ${last}`}</Text>
-          <Text style={s.small}>{`${u.calls} call${u.calls === 1 ? '' : 's'} · ${minutes}`}</Text>
+          {who}
+          {state}
+          <Text style={s.small}>{`Joined ${day(u.created_at)}. Last active ${last}.`}</Text>
+          <Text style={s.small}>{`${u.calls} call${u.calls === 1 ? '' : 's'}, ${minutes}`}</Text>
           {actions}
         </>
       )}
@@ -163,6 +159,7 @@ const s = StyleSheet.create({
   narrowTop: { flexDirection: 'row', alignItems: 'flex-start', gap: space.ml },
   name: { color: color.fg, fontSize: font.size.body, fontWeight: font.weight.semi },
   you: { color: color.muted, fontWeight: font.weight.normal },
-  small: { color: color.muted, fontSize: font.size.m, fontVariant: ['tabular-nums'] },
+  small: { color: color.muted, fontSize: font.size.s, fontVariant: ['tabular-nums'] },
   actions: { flexDirection: 'row', flexWrap: 'wrap', gap: space.sm },
+  pills: { flexDirection: 'row', flexWrap: 'wrap', gap: space.xs },
 });

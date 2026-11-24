@@ -20,6 +20,11 @@ const CALLER_ID_OPTIONS = [
   ['callenvoy', 'CallEnvoy number'],
   ['own', 'My own number'],
 ] as const;
+// With the user's own Twilio keys, calls go out from their Twilio number.
+const OWN_KEYS_CALLER_ID_OPTIONS = [
+  ['callenvoy', 'My Twilio number'],
+  ['own', 'My own phone number'],
+] as const;
 const NO_ANSWER_OPTIONS = [
   ['ai_handles', 'AI carries on'],
   ['end_politely', 'End politely'],
@@ -145,7 +150,7 @@ export function CallOptions({
       <Segmented
         label="Caller ID"
         value={o.caller_id}
-        options={CALLER_ID_OPTIONS}
+        options={config.keys && !config.keys.server_keys ? OWN_KEYS_CALLER_ID_OPTIONS : CALLER_ID_OPTIONS}
         onChange={set('caller_id')}
         disabled={ownVerified ? [] : ['own']}
         help={

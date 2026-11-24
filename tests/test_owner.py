@@ -288,3 +288,16 @@ def test_rate_gate_drops_faster_than_twice_real_time():
     assert not g.allow(640)
     t[0] += 1
     assert g.allow(640)
+
+
+def test_connect_app_during_handover_keeps_the_fallback(monkeypatch, fresh):
+    """connect_me (reach app) while a hand-over alert is out must not replace the hand-over's fallback timer."""
+    cid, clock, bot = live_call(monkeypatch, mode="transfer")
+
+    async def go():
+        await owner.handover(cid)
+        await clock.advance(5)
+        await owner.connect(uid(), cid, "join", "app")
+        await clock.advance(15)
+        assert owner.view(cid)["state"] == "ringing" and len(owner_legs(fresh)) == 1
+    run(go())

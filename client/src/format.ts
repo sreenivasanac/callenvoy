@@ -39,24 +39,26 @@ export function clock(iso: string) {
   return time(new Date(iso));
 }
 
-export type Tone = 'neutral' | 'ok' | 'bad' | 'info' | 'alert';
+export type Tone = 'neutral' | 'ok' | 'hold' | 'info' | 'alert' | 'done' | 'bad';
 
-/** Status badge text and colour (mockup wording). */
+/** Status badge text and colour. Each state has its own tone: info (dialing, menu), hold, ok (talking),
+ *  alert (a person waits for the user), done, neutral, bad. */
 export function statusLabel(c: Call): { text: string; tone: Tone; live: boolean } {
   if (!c.finished) {
-    if (c.direction === 'inbound') return { text: c.status === 'in_progress' ? 'Forwarded to you' : 'Ringing your phone', tone: 'ok', live: true };
-    if (c.status === 'queued' || c.status === 'dialing') return { text: 'Dialing', tone: 'ok', live: true };
-    const byPhase: Record<string, string> = {
-      menu: 'In menu',
-      on_hold: 'On hold',
-      talking: 'Talking to a person',
-      connecting_owner: 'Person on the line',
-      owner_on_call: 'Talking to a person',
+    if (c.direction === 'inbound') return { text: c.status === 'in_progress' ? 'Forwarded to you' : 'Ringing your phone', tone: 'info', live: true };
+    if (c.status === 'queued' || c.status === 'dialing') return { text: 'Dialing', tone: 'info', live: true };
+    const byPhase: Record<string, [string, Tone]> = {
+      menu: ['In menu', 'info'],
+      on_hold: ['On hold', 'hold'],
+      talking: ['Talking to a person', 'ok'],
+      connecting_owner: ['Person on the line', 'ok'],
+      owner_on_call: ['Talking to a person', 'ok'],
     };
-    return { text: (c.phase && byPhase[c.phase]) || 'Connected', tone: 'ok', live: true };
+    const [text, tone] = (c.phase && byPhase[c.phase]) || ['Connected', 'info'];
+    return { text, tone, live: true };
   }
   const byResult: Record<string, [string, Tone]> = {
-    done: ['Done', 'ok'],
+    done: ['Done', 'done'],
     not_done: ['Not done', 'neutral'],
     voicemail: ['Voicemail', 'neutral'],
     no_human: ['No person reached', 'neutral'],
@@ -71,17 +73,18 @@ export function statusLabel(c: Call): { text: string; tone: Tone; live: boolean 
   return { text: byStatus[c.status] ?? 'Ended', tone: 'neutral', live: false };
 }
 
-export function ownerLabel(c: Call): { text: string; tone: Tone } | null {
+/** What the user is doing on the call, or asked to do. "alert" (the accent) only when the call waits for them. */
+export function ownerLabel(c: Call): { text: string; tone: Tone; live?: boolean } | null {
   if (c.finished) return null;
   switch (c.owner.state) {
     case 'alerting':
-      return { text: 'Waiting for you', tone: 'alert' };
+      return { text: 'Waiting for you', tone: 'alert', live: true };
     case 'ringing':
-      return { text: 'Ringing your phone', tone: 'alert' };
+      return { text: 'Ringing your phone', tone: 'alert', live: true };
     case 'listening':
-      return { text: 'You are listening', tone: 'info' };
+      return { text: 'You are listening', tone: 'neutral' };
     case 'on_call':
-      return { text: c.owner.via === 'phone' ? 'You are on the call by phone' : 'You are on the call', tone: 'alert' };
+      return { text: c.owner.via === 'phone' ? 'You are on the call by phone' : 'You are on the call', tone: 'ok' };
     default:
       return null;
   }
@@ -103,8 +106,8 @@ export const REACH_TEXT = { app: 'app', phone: 'phone', app_then_phone: 'app, th
 
 export function modeLine(c: Call) {
   return c.mode === 'transfer'
-    ? `Mode: ${MODE_TEXT.transfer} · reach: ${REACH_TEXT[c.reach]}`
-    : `Mode: ${MODE_TEXT.handle} · alerts: ${REACH_TEXT[c.reach]}`;
+    ? `Mode: ${MODE_TEXT.transfer}. You are reached by ${REACH_TEXT[c.reach]}.`
+    : `Mode: ${MODE_TEXT.handle}. Alerts go to ${REACH_TEXT[c.reach]}.`;
 }
 
 export const RESULT_TEXT: Record<string, string> = {

@@ -15,18 +15,20 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from . import config, demo_line, guard, owner, store, twilio_api
+from . import auth, config, demo_line, guard, keys, owner, store, twilio_api
 
 log = logging.getLogger("callenvoy.calls")
 
 
 class CallError(Exception):
-    """A refusal with a plain message for the agent or the console. `field` names the bad input."""
+    """A refusal with a plain message for the agent or the console. `field` names the bad input; `code` is a
+    fixed word the console can act on (keys_needed, demo_limit)."""
 
-    def __init__(self, message: str, status: int = 400, field: str | None = None):
+    def __init__(self, message: str, status: int = 400, field: str | None = None, code: str | None = None):
         super().__init__(message)
         self.status = status
         self.field = field
+        self.code = code
 
 
 # --- Inputs: one set of field types for the MCP tool signature and the console body ---
@@ -204,16 +206,41 @@ def resolve(inp: PlaceCallInput, profile: dict) -> dict:
 
 # --- Limits ---
 
-def check_limits() -> None:
-    """The service's shared limits (all users together). The messages say nothing about other users' calls."""
+KEYS_NEEDED = ("real calls need your own Twilio and OpenAI keys: add them in the console under Settings > "
+               f"Provider keys. Without them you can call the demo line, {config.DEMO_LINE_NUMBER}")
+
+
+def _admin_id() -> str | None:
+    admin = store.user_by_email(store.admin_email()) if store.admin_email() else None
+    return admin["id"] if admin else None
+
+
+def check_limits(user: dict, guest: bool) -> int:
+    """Refuses a call over a limit. Returns the seconds the call may last at most: what is left of the day's
+    budget, so a call that starts just under the cap cannot run far past it. `guest`: a free demo call on the
+    server's keys. The messages say nothing about other users' calls."""
     live = store.live_calls()
     if len(live) >= config.MAX_CONCURRENT_CALLS:
-        raise CallError(f"the service is busy (at most {config.MAX_CONCURRENT_CALLS} calls at a time); "
-                        "try again in a few minutes", 429)
-    running = sum(_elapsed(r) for r in live)
-    if (store.talk_seconds_today() + running) / 60 >= config.DAILY_MINUTE_CAP:
-        raise CallError(f"the service's daily limit of {config.DAILY_MINUTE_CAP} call minutes is reached; "
-                        "try again tomorrow", 429)
+        raise CallError("the service is busy right now; try again in a few minutes", 429)
+    mine = [r for r in live if r["user_id"] == user["id"]]
+    if len(mine) >= config.MAX_USER_CALLS:
+        raise CallError(f"you already have {len(mine)} calls running (at most {config.MAX_USER_CALLS} at a time); "
+                        "wait for one to end", 429)
+    if guest:
+        if store.demo_calls(user["id"]) >= config.DEMO_CALLS_PER_USER:
+            raise CallError(f"you have used your {config.DEMO_CALLS_PER_USER} free demo calls. Add your own Twilio "
+                            "and OpenAI keys (Settings > Provider keys) to call any number", 429, code="demo_limit")
+        admin = _admin_id()
+        used = store.server_key_seconds_today(admin) + sum(
+            _elapsed(r) for r in live if not r["own_keys"] and r["user_id"] != admin)
+        cap, over = config.DEMO_DAILY_MINUTE_CAP * 60, "today's free demo calls are used up; try again tomorrow"
+    else:
+        used = store.talk_seconds_today(user["id"]) + sum(_elapsed(r) for r in mine)
+        cap, over = config.DAILY_MINUTE_CAP * 60, (f"your daily limit of {config.DAILY_MINUTE_CAP} call minutes is "
+                                                   "reached; try again tomorrow")
+    if used >= cap:
+        raise CallError(over, 429)
+    return cap - used
 
 
 def _ts(iso: str) -> datetime:
@@ -227,7 +254,7 @@ def _elapsed(row: dict) -> int:
 
 
 def minutes_used_today(user_id: str | None = None) -> int:
-    """The service's minutes today (all users: the daily cap), or one user's."""
+    """One user's call minutes today (their daily cap), or all users' together."""
     live = [r for r in store.live_calls() if user_id is None or r["user_id"] == user_id]
     return (store.talk_seconds_today(user_id) + sum(_elapsed(r) for r in live)) // 60
 
@@ -256,13 +283,23 @@ async def place_call(user_id: str, inp: PlaceCallInput) -> dict:
         number = guard.check_number(inp.to)
     except ValueError as e:
         raise CallError(f"to: {e}", field="to") from e
+    user = store.get_user(user_id)
     profile = get_profile(user_id)
     if not profile["name"]:
         raise CallError("set your name first: the AI says it calls on your behalf. Save it with "
                         "callenvoy_save_profile (name) or in the console under Settings > Profile", field="name")
+    # The demo line answers only the server's number, so a call to it always runs on the server's keys.
+    demo = number == config.DEMO_LINE_NUMBER
+    creds = keys.server() if demo else keys.for_user(user)
+    if creds is None:
+        raise CallError(KEYS_NEEDED, 403, field="keys", code="keys_needed")
+    guest = not creds.own and not auth.is_admin(user)  # a free demo call
     s = resolve(inp, profile)
-    if number == config.DEMO_LINE_NUMBER:
-        s["caller_id"] = "callenvoy"  # the demo line answers only the CallEnvoy number
+    if demo:
+        s["caller_id"] = "callenvoy"
+    if guest:  # short, and the server's Twilio account rings nobody's phone for a guest
+        s["max_minutes"] = min(s["max_minutes"], config.DEMO_MAX_MINUTES)
+        s["reach"] = "app"
     hand_over = s["mode"] == "transfer" or bool(inp.connect_when)
     if s["reach"] == "phone" and (hand_over or s["listen_in"]) and not profile["callback_number"]:
         raise CallError("this call may ring the user's phone, but no callback number is saved: save callback_number "
@@ -275,7 +312,7 @@ async def place_call(user_id: str, inp: PlaceCallInput) -> dict:
                             "callenvoy_verify_number (or Settings > Verify) and type the code on that phone; or use "
                             'from "callenvoy"', field="from")
         from_number = own
-    check_limits()
+    seconds_left = check_limits(user, guest)
 
     call_id = store.new_id("c_")
     text = lambda v: (v or "").strip() or None  # noqa: E731
@@ -290,19 +327,27 @@ async def place_call(user_id: str, inp: PlaceCallInput) -> dict:
         "max_minutes": s["max_minutes"], "voice": s["voice"], "record": int(s["record"]),
         "ws_token": secrets.token_urlsafe(32),
         "direction": "outbound", "leave_voicemail": int(s["leave_voicemail"]),
-        "from_number": from_number or config.env("TWILIO_FROM_NUMBER") or None,
+        "from_number": from_number or creds.from_number or None, "own_keys": int(creds.own),
     })
     LIVE[call_id] = Live()
     try:
         sid = await twilio_api.create_call(
-            to=number, url=url(f"/twilio/voice/{call_id}"), status_callback=url(f"/twilio/status/{call_id}"),
-            record=bool(s["record"]), time_limit=config.MAX_CALL_MINUTES * 60, from_number=from_number)
+            creds, to=number, url=url(f"/twilio/voice/{call_id}"), status_callback=url(f"/twilio/status/{call_id}"),
+            record=bool(s["record"]),
+            time_limit=min((config.DEMO_MAX_MINUTES if guest else config.MAX_CALL_MINUTES) * 60, seconds_left),
+            from_number=from_number)
     except Exception as e:  # noqa: BLE001 - any dial failure ends the call row
         log.warning("dial failed for %s: %s", call_id, e)
         store.update_call(call_id, status="failed", error=f"could not dial: {e}", ended_at=store.now())
         _drop(call_id)
         raise CallError(f"could not dial: {e}", 502) from e
     store.update_call(call_id, twilio_sid=sid)
+    if call_id not in LIVE:  # hung up (or the user was removed) while the dial request was pending
+        try:
+            await twilio_api.update_call(creds, sid, hang_up=True)
+        except Exception as e:  # noqa: BLE001
+            log.warning("hang up of a call canceled while dialing failed for %s: %s", call_id, e)
+        return view(call_row(call_id))
     store.update_call(call_id, if_status="queued", status="dialing")  # a final status may have arrived first
     spawn(call_id, _dial_timeout(call_id))
     return view(store.get_call(call_id))
@@ -318,7 +363,7 @@ async def _dial_timeout(call_id: str) -> None:
                       error=f"no answer and no status from Twilio within {config.DIAL_TIMEOUT_SECONDS} s")
     if row["twilio_sid"]:
         try:
-            await twilio_api.update_call(row["twilio_sid"], hang_up=True)
+            await twilio_api.update_call(keys.for_call(row), row["twilio_sid"], hang_up=True)
         except Exception as e:  # noqa: BLE001
             log.warning("hang up of a stuck call failed for %s: %s", call_id, e)
     await finish(call_id)
@@ -415,7 +460,7 @@ async def stop_call(row: dict) -> str:
     event(call_id, "hang up requested")
     if row["twilio_sid"]:
         try:
-            await twilio_api.update_call(row["twilio_sid"], hang_up=True)
+            await twilio_api.update_call(keys.for_call(row), row["twilio_sid"], hang_up=True)
         except Exception as e:  # noqa: BLE001
             log.warning("hang up failed for %s: %s", call_id, e)
     await owner.end(call_id)
@@ -429,7 +474,7 @@ async def stop_call(row: dict) -> str:
 
 
 async def stop_user_calls(user_id: str, drop: bool = False) -> None:
-    """The admin disabled or removes a user: hang up their live calls. `drop` also forgets the in-memory state
+    """A user was disabled or removed: hang up their live calls. `drop` also forgets the in-memory state
     (the rows are deleted next, so no final status will close them)."""
     for r in store.user_live_calls(user_id):
         await stop_call(r)
@@ -487,21 +532,34 @@ def note_line(call_id: str, who: str) -> None:
 # --- Caller ID (section 22.2) ---
 
 async def caller_id_verified(user_id: str, number: str | None) -> bool:
-    """Verified with Twilio AND verified by this user (config.CALLER_ID_CLAIM): Twilio's list is shared."""
-    if not number or store.get_profile(user_id).get(config.CALLER_ID_CLAIM) != number:
+    """Verified in the Twilio account this user's calls run on (their own; the server's for the admin only,
+    so no account's verified numbers are shared between users)."""
+    creds = keys.for_user(store.get_user(user_id))
+    if not number or not creds:
         return False
-    return await _twilio_verified(number)
+    return await _twilio_verified(creds, number)
 
 
-async def _twilio_verified(number: str) -> bool:
+async def _twilio_verified(creds, number: str) -> bool:
     try:
-        return await twilio_api.caller_id_verified(number)
+        return await twilio_api.caller_id_verified(creds, number)
     except Exception as e:  # noqa: BLE001
         log.warning("caller ID lookup failed: %s", e)
         return False
 
 
 _caller_id_cache: dict[tuple[str, str], tuple[bool, float]] = {}  # (user, number) -> (verified, lookup time)
+
+
+def forget_caller_id() -> None:
+    _caller_id_cache.clear()
+
+
+def demo_calls_left(user: dict) -> int:
+    """Free calls to the demo line this user still has (the admin is not counted)."""
+    if auth.is_admin(user):
+        return config.DEMO_CALLS_PER_USER
+    return max(0, config.DEMO_CALLS_PER_USER - store.demo_calls(user["id"]))
 
 
 async def caller_id(user_id: str) -> dict:
@@ -521,19 +579,16 @@ async def verify_number(user_id: str) -> dict:
     number = get_profile(user_id)["callback_number"]
     if not number:
         raise CallError("save callback_number first; that is the number that gets verified", field="callback_number")
+    creds = keys.for_user(store.get_user(user_id))
+    if not creds:
+        raise CallError(KEYS_NEEDED, 403, field="keys", code="keys_needed")
     if await caller_id_verified(user_id, number):
         return {"number": number, "verified": True, "validation_code": None,
                 "message": f"{number} is already a verified caller ID"}
-    if await _twilio_verified(number):  # verified, but not by this user: another account's number
-        raise CallError("this number cannot be verified for this account", 409, field="callback_number")
-    if store.caller_id_claim_busy(user_id, number):
-        raise CallError("a verification of this number is in progress; try again in 10 minutes", 409,
-                        field="callback_number")
     try:
-        code = await twilio_api.start_caller_id_validation(number)
+        code = await twilio_api.start_caller_id_validation(creds, number)
     except Exception as e:  # noqa: BLE001
         raise CallError(f"could not start the verification: {e}", 502) from e
-    store.claim_caller_id(user_id, number)
     return {"number": number, "verified": False, "validation_code": code,
             "message": f"Twilio is calling {number} now. Answer and type {code} on the keypad."}
 
@@ -547,20 +602,18 @@ def _callback_user(user_id: str | None) -> tuple[dict, str] | None:
     return (user, number) if number else None
 
 
-def inbound(form: dict) -> dict | None:
-    """Forwards to the user who last called this number within INBOUND_BUSINESS_DAYS, else to the admin.
-    Saves the inbound row for that user and returns it, or None when there is nobody to forward to."""
+def inbound(form: dict, owner_id: str | None = None) -> dict | None:
+    """A business calls back. The server's own number belongs to the admin (nobody else places real calls from
+    it); a user's own Twilio number (`owner_id`) belongs to that user. The call is forwarded to that user's
+    callback number. Saves the inbound row and returns it, or None when there is nobody to forward to."""
     from datetime import datetime, timedelta, timezone
     caller = guard.to_e164(form.get("From", "")) or (form.get("From") or "unknown")[:40]
     since = (datetime.now(timezone.utc) - timedelta(days=config.INBOUND_BUSINESS_DAYS)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    last = store.last_call_to(caller, since)
-    admin = store.user_by_email(store.admin_email()) if store.admin_email() else None
-    target = _callback_user(last["user_id"] if last else None) or _callback_user(admin["id"] if admin else None)
+    target = _callback_user(owner_id or _admin_id())
     if not target:
         return None
     user, forward_to = target
-    # The name comes from the forwarded user's own calls only (the admin never sees another user's business).
-    named = last if last and last["user_id"] == user["id"] else store.last_call_to(caller, since, user["id"])
+    named = store.last_call_to(caller, since, user["id"])  # the business name of their newest call to it
     call_id = store.new_id("c_")
     store.insert_call({
         "id": call_id, "user_id": user["id"], "created_at": store.now(), "status": "in_progress", "phase": None,
@@ -568,7 +621,7 @@ def inbound(form: dict) -> dict | None:
         "goal": "Callback forwarded to your phone", "mode": "handle", "reach": "phone",
         "alert_on_human": 0, "listen_in": 0, "alert_wait_seconds": 0, "no_answer": "ai_handles",
         "max_minutes": 0, "voice": config.DEFAULT_VOICE, "record": 0, "leave_voicemail": 0,
-        "twilio_sid": form.get("CallSid"), "from_number": forward_to,
+        "twilio_sid": form.get("CallSid"), "from_number": forward_to, "own_keys": int(bool(owner_id)),
     })
     LIVE[call_id] = Live()  # so get_call with wait_seconds waits until the forward ends
     return {"id": call_id, "caller": caller, "forward_to": forward_to}
@@ -597,7 +650,7 @@ async def press_keys(call_id: str, digits: str, bot) -> None:
     store.update_call(call_id, ws_token=token)
     live.moved_from = bot
     try:
-        await twilio_api.update_call(row["twilio_sid"], hang_up=False, twiml=twilio_api.twiml(
+        await twilio_api.update_call(keys.for_call(row), row["twilio_sid"], hang_up=False, twiml=twilio_api.twiml(
             f'<Play digits="{digits}"/>' + demo_line.stream(f"/twilio/media/{token}")))
     except Exception:
         live.moved_from = None
@@ -778,6 +831,6 @@ async def restart_cleanup() -> None:
         for sid in (row["twilio_sid"], row["owner_twilio_sid"]):
             if sid:
                 try:
-                    await twilio_api.update_call(sid, hang_up=True)
+                    await twilio_api.update_call(keys.for_call(row), sid, hang_up=True)
                 except Exception as e:  # noqa: BLE001
                     log.warning("could not hang up orphan leg of %s: %s", row["id"], e)

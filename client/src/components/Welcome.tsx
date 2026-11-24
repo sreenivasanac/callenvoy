@@ -1,4 +1,4 @@
-// First-run welcome card on Calls (round 3 B2): name, a first call (the demo line), an agent.
+// First-run welcome card on Calls: name, a free demo call, own keys for real calls, an agent.
 import { type ReactNode, useEffect, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 import { ApiError } from '../api';
@@ -7,6 +7,7 @@ import { useCalls, useGo, useSession, useSettings } from '../hooks';
 import { loadLocal, saveLocal } from '../platform/storage';
 import { space } from '../theme';
 import { useKeys } from './Agents';
+import { PROVIDER_COST } from './Providers';
 import { CALLBACK_HELP } from './SettingsForm';
 import { Button, Card, Cell, Pill, Row, StepNumber, T, TextField } from './ui';
 
@@ -30,18 +31,23 @@ export function useWelcome(): [boolean, () => void] {
 
 export function WelcomeCard({ onHide }: { onHide: () => void }) {
   const go = useGo();
-  const { settings } = useSettings();
+  const { settings, config } = useSettings();
   const { calls } = useCalls();
   const { keys } = useKeys();
   const named = !!settings?.name;
   const called = !!calls?.some((c) => c.direction === 'outbound');
+  const own = config?.keys; // absent on an older server: then there is no keys step to show as open
+  const ready = !own || own.ready;
   const connected = !!keys?.some((k) => k.last_used_at);
+  const left = own?.demo_calls_left ?? 0;
+  const steps = [named, called, ready, connected];
+  const done = steps.filter(Boolean).length;
   return (
     <Card label="Welcome">
       <View style={s.head}>
         <View style={s.fill}>
           <T v="h2">Welcome to CallEnvoy</T>
-          <T v="muted">Three steps to your first call.</T>
+          <T v="muted">{done === steps.length ? 'You are set up.' : `Four steps. ${done} of ${steps.length} done.`}</T>
         </View>
         {named ? <Button label="Hide" a11yLabel="Hide the welcome steps" kind="link" onPress={onHide} /> : null}
       </View>
@@ -49,19 +55,40 @@ export function WelcomeCard({ onHide }: { onHide: () => void }) {
         <Step n={1} done={named} title="Tell the AI who it calls for">
           {named ? <T v="soft">{`The AI says: “I am calling on behalf of ${settings!.name}.”`}</T> : <NameForm />}
         </Step>
-        <Step n={2} done={called} title="Make a first call">
-          <T v="soft">Try the demo line: a test phone line of CallEnvoy that answers like a business, with a menu and a short hold. Or call a real business.</T>
-          <View style={s.actions}>
-            <Button label="Try the demo line" disabled={!named} onPress={() => go('/new?demo=1')} />
-            <Button label="New call" kind="secondary" disabled={!named} onPress={() => go('/new')} />
-          </View>
+        <Step n={2} done={called} title="Make a free demo call">
+          <T v="soft">
+            {`Call our demo line: a test phone line that answers like a business, with a menu, a short hold, and a billing agent.${
+              own && !own.ready ? ` It costs you nothing. ${left} free call${left === 1 ? '' : 's'} left.` : ''
+            }`}
+          </T>
+          {!called ? (
+            <View style={s.actions}>
+              <Button label="Call the demo line" disabled={!named || (!ready && left <= 0)} onPress={() => go('/new?demo=1')} />
+            </View>
+          ) : null}
           {!named ? <T v="fine">Save your name first.</T> : null}
         </Step>
-        <Step n={3} done={connected} title="Connect an AI agent">
-          <T v="soft">Add CallEnvoy to Claude Code, Codex, Claude Desktop, or Cursor. Then ask your agent to make a call.</T>
-          <View style={s.actions}>
-            <Button label="Set up an agent" kind="secondary" onPress={() => go('/agents')} />
-          </View>
+        <Step n={3} done={ready} title="Add your keys for real calls">
+          {own?.server_keys ? (
+            <T v="soft">This account uses the server's keys, so real calls already work.</T>
+          ) : ready ? (
+            <T v="soft">Your Twilio and OpenAI keys are saved. You can call real numbers.</T>
+          ) : (
+            <>
+              <T v="soft">Real numbers run on your own Twilio key (the phone line) and OpenAI key (the AI). {PROVIDER_COST}</T>
+              <View style={s.actions}>
+                <Button label="Add my keys" kind={called ? 'primary' : 'secondary'} onPress={() => go('/settings?focus=keys')} />
+              </View>
+            </>
+          )}
+        </Step>
+        <Step n={4} done={connected} title="Connect an AI agent">
+          <T v="soft">Add CallEnvoy to Claude, ChatGPT, Codex, or Cursor. Then ask your agent to make a call. You can also place calls here with New call.</T>
+          {!connected ? (
+            <View style={s.actions}>
+              <Button label="Set up an agent" kind="secondary" onPress={() => go('/agents')} />
+            </View>
+          ) : null}
         </Step>
       </View>
     </Card>

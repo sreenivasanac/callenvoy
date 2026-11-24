@@ -1,10 +1,11 @@
 {
   "name": "CallEnvoy",
   "short_name": "CallEnvoy",
-  "start_url": "/callenvoy/",
-  "scope": "/callenvoy/",
+  "description": "An AI that makes your phone calls. Listen in, take over, hand back.",
+  "start_url": "/",
+  "scope": "/",
   "display": "standalone",
-  "background_color": "#0b1020",
-  "theme_color": "#0b1020",
-  "icons": [{ "src": "/callenvoy/icon.png", "sizes": "1024x1024", "type": "image/png", "purpose": "any" }]
+  "background_color": "#F7F3EC",
+  "theme_color": "#F7F3EC",
+  "icons": [{ "src": "/icon.png", "sizes": "1024x1024", "type": "image/png", "purpose": "any" }]
 }

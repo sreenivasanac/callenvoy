@@ -1,4 +1,6 @@
-"""The three Twilio REST calls CallEnvoy needs, with httpx and basic auth (no Twilio SDK)."""
+"""The Twilio REST calls CallEnvoy needs, with httpx and basic auth (no Twilio SDK).
+
+Every function takes `creds` (keys.Creds): the account of the call's user, or the server's own."""
 
 from collections.abc import AsyncIterator
 from urllib.parse import urlencode
@@ -14,19 +16,20 @@ class TwilioError(Exception):
     pass
 
 
-def _auth() -> tuple[str, str]:
-    return config.env("TWILIO_ACCOUNT_SID"), config.env("TWILIO_AUTH_TOKEN")
+def _auth(creds) -> tuple[str, str]:
+    """`creds` (keys.Creds): the Twilio account of the call's user, or the server's."""
+    return creds.twilio_sid, creds.twilio_token
 
 
-def _url(path: str) -> str:
-    return f"{API}/Accounts/{config.env('TWILIO_ACCOUNT_SID')}/{path}"
+def _url(creds, path: str) -> str:
+    return f"{API}/Accounts/{creds.twilio_sid}/{path}"
 
 
-async def _post(path: str, data: list[tuple[str, str]]) -> dict:
+async def _post(creds, path: str, data: list[tuple[str, str]]) -> dict:
     # httpx form-encodes only a mapping; it treats a list as a raw byte stream and fails in an AsyncClient.
     # Twilio needs repeated keys (StatusCallbackEvent), so the pairs are encoded here.
-    async with httpx.AsyncClient(auth=_auth(), timeout=15) as c:
-        r = await c.post(_url(path), content=urlencode(data), headers={"Content-Type": "application/x-www-form-urlencoded"})
+    async with httpx.AsyncClient(auth=_auth(creds), timeout=15) as c:
+        r = await c.post(_url(creds, path), content=urlencode(data), headers={"Content-Type": "application/x-www-form-urlencoded"})
     if r.status_code >= 400:
         try:
             msg = r.json().get("message", "")
@@ -36,10 +39,10 @@ async def _post(path: str, data: list[tuple[str, str]]) -> dict:
     return r.json()
 
 
-async def create_call(*, to: str, url: str, status_callback: str, record: bool = False,
+async def create_call(creds, *, to: str, url: str, status_callback: str, record: bool = False,
                       time_limit: int | None = None, ring_seconds: int | None = None, from_number: str | None = None) -> str:
-    """Dials `to` from `from_number` (default TWILIO_FROM_NUMBER). Returns the call SID. Also used for the owner's leg."""
-    data = [("To", to), ("From", from_number or config.env("TWILIO_FROM_NUMBER")), ("Url", url), ("Method", "POST"),
+    """Dials `to` from `from_number` (default: the account's number). Returns the call SID. Also used for the owner's leg."""
+    data = [("To", to), ("From", from_number or creds.from_number), ("Url", url), ("Method", "POST"),
             ("StatusCallback", status_callback), ("StatusCallbackMethod", "POST")]
     data += [("StatusCallbackEvent", e) for e in ("initiated", "ringing", "answered", "completed")]
     if record:
@@ -50,12 +53,12 @@ async def create_call(*, to: str, url: str, status_callback: str, record: bool =
         data.append(("TimeLimit", str(time_limit)))
     if ring_seconds:
         data.append(("Timeout", str(ring_seconds)))
-    return (await _post("Calls.json", data))["sid"]
+    return (await _post(creds, "Calls.json", data))["sid"]
 
 
-async def update_call(sid: str, *, hang_up: bool = True, twiml: str | None = None) -> None:
+async def update_call(creds, sid: str, *, hang_up: bool = True, twiml: str | None = None) -> None:
     """Hangs up a live call, or with `twiml` makes the call leave its current TwiML and run this document."""
-    await _post(f"Calls/{sid}.json", [("Twiml", twiml)] if twiml else [("Status", "completed")])
+    await _post(creds, f"Calls/{sid}.json", [("Twiml", twiml)] if twiml else [("Status", "completed")])
 
 
 def twiml(body: str) -> str:
@@ -63,9 +66,9 @@ def twiml(body: str) -> str:
     return f'<?xml version="1.0" encoding="UTF-8"?><Response>{body}</Response>'
 
 
-async def _get(path: str, params: dict) -> dict:
-    async with httpx.AsyncClient(auth=_auth(), timeout=15) as c:
-        r = await c.get(_url(path), params=params)
+async def _get(creds, path: str, params: dict) -> dict:
+    async with httpx.AsyncClient(auth=_auth(creds), timeout=15) as c:
+        r = await c.get(_url(creds, path), params=params)
     if r.status_code >= 400:
         raise TwilioError(f"Twilio {r.status_code}")
     return r.json()
@@ -75,20 +78,20 @@ async def _get(path: str, params: dict) -> dict:
 # POST OutgoingCallerIds.json {PhoneNumber, FriendlyName} -> {validation_code, call_sid, ...}; Twilio then
 # calls the number and the person types the code. GET OutgoingCallerIds.json?PhoneNumber= lists verified ones.
 
-async def caller_id_verified(number: str) -> bool:
+async def caller_id_verified(creds, number: str) -> bool:
     return any(c.get("phone_number") == number for c in
-               (await _get("OutgoingCallerIds.json", {"PhoneNumber": number})).get("outgoing_caller_ids", []))
+               (await _get(creds, "OutgoingCallerIds.json", {"PhoneNumber": number})).get("outgoing_caller_ids", []))
 
 
-async def start_caller_id_validation(number: str) -> str:
+async def start_caller_id_validation(creds, number: str) -> str:
     """Starts Twilio's validation call to `number`. Returns the 6-digit code the owner types on the keypad."""
-    return (await _post("OutgoingCallerIds.json", [("PhoneNumber", number), ("FriendlyName", config.APP_NAME)]))["validation_code"]
+    return (await _post(creds, "OutgoingCallerIds.json", [("PhoneNumber", number), ("FriendlyName", config.APP_NAME)]))["validation_code"]
 
 
-async def fetch_recording(recording_sid: str) -> AsyncIterator[bytes]:
-    """Streams the recording mp3 from Twilio."""
-    async with httpx.AsyncClient(auth=_auth(), timeout=30) as c:
-        async with c.stream("GET", _url(f"Recordings/{recording_sid}.mp3")) as r:
+async def fetch_recording(creds, recording_sid: str) -> AsyncIterator[bytes]:
+    """Streams the recording mp3 from the Twilio account that made it."""
+    async with httpx.AsyncClient(auth=_auth(creds), timeout=30) as c:
+        async with c.stream("GET", _url(creds, f"Recordings/{recording_sid}.mp3")) as r:
             if r.status_code >= 400:
                 raise TwilioError(f"Twilio {r.status_code}")
             async for chunk in r.aiter_bytes():

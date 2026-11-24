@@ -1,0 +1,104 @@
+{
+ "business": "Northstar Internet",
+ "goal": "Ask billing to remove a wrong charge of 30 dollars on the October bill and get a reference number.",
+ "duration_seconds": 137,
+ "outcome": {
+  "result": "done",
+  "summary": "The $30 wrong charge was removed from the October bill and a reference number NS-89099 was provided.",
+  "details": {
+   "reference_number": "NS-89099"
+  }
+ },
+ "lines": [
+  {
+   "n": 0,
+   "who": "them",
+   "text": "Thank you for calling Northstar Internet. This is a memo line for billing. Press one. For technical support Press two. For all other questions Press zero.",
+   "at": 3.9
+  },
+  {
+   "n": 1,
+   "who": "event",
+   "text": "pressed 1",
+   "at": 14.3
+  },
+  {
+   "n": 2,
+   "who": "them",
+   "text": "You have reached billing. Your call is important to us. All of our agents are currently helping other customers. The estimated wait time is less than one minute.",
+   "at": 16.4
+  },
+  {
+   "n": 3,
+   "who": "event",
+   "text": "waiting on hold",
+   "at": 26.6
+  },
+  {
+   "n": 4,
+   "who": "them",
+   "text": "Thank you for holding. This call may be recorded for quality and training purposes. Please continue to hold. And the next available agent will be with you shortly.",
+   "at": 34.7
+  },
+  {
+   "n": 5,
+   "who": "them",
+   "text": "Your call is important to us. Please stay on the line.",
+   "at": 54.2
+  },
+  {
+   "n": 6,
+   "who": "them",
+   "text": "Thanks for holding, this is Maria in billing. How can I help you today?",
+   "at": 70.1
+  },
+  {
+   "n": 7,
+   "who": "ai",
+   "text": "Hi Maria, I’m calling on behalf of Alex Morgan. There’s a wrong charge of 30 dollars on the October bill—could you please remove it and provide a reference number?",
+   "at": 74.6
+  },
+  {
+   "n": 8,
+   "who": "event",
+   "text": "alert sent",
+   "at": 85.3
+  },
+  {
+   "n": 9,
+   "who": "them",
+   "text": "I can help with that. May I have the account holder's name and either the service address or account phone number to look up your account?",
+   "at": 87.1
+  },
+  {
+   "n": 10,
+   "who": "ai",
+   "text": "The account holder’s name is Alex Morgan. The service address is 12 Oak Street, Springfield.",
+   "at": 94.4
+  },
+  {
+   "n": 11,
+   "who": "them",
+   "text": "Thank you for the information. I've located your account and removed the thirty dollars wrong charge from your October bill. A credit will appear on your next statement. Your reference number is NS eight nine zero nine nine. That's N as in Nancy, S as in Sam Dash eight nine zero nine nine. Is there anything else I can help you with today?",
+   "at": 104.9
+  },
+  {
+   "n": 12,
+   "who": "ai",
+   "text": "Thank you, I have the reference number NS-89099. That’s all for today. Have a great day, goodbye.",
+   "at": 125.0
+  },
+  {
+   "n": 13,
+   "who": "event",
+   "text": "AI ended the call",
+   "at": 126.1
+  },
+  {
+   "n": 14,
+   "who": "event",
+   "text": "hang up requested",
+   "at": 135.7
+  }
+ ]
+}

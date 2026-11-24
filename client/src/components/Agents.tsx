@@ -1,12 +1,12 @@
 // Agents page (round 2, B3): API keys, how to add CallEnvoy to an agent, connection check, what the agent can do.
-import { useCallback, useEffect, useState } from 'react';
+import { type RefObject, useCallback, useEffect, useRef, useState } from 'react';
 import { AppState, StyleSheet, Text, View } from 'react-native';
 import { api, type ApiKey } from '../api';
-import { installPrompt, setup, type Client } from '../agentSetup';
+import { installPrompt, setup, signInSetup, type Client, type SignInClient } from '../agentSetup';
 import { ago, when } from '../format';
 import { border, color, font, radius, space } from '../theme';
 import { Loading } from './Loading';
-import { Button, Card, Chips, CopyBlock, Disclosure, Note, Pill, Sheet, Stack, T, TextField, text } from './ui';
+import { Button, Card, Chips, CopyBlock, Disclosure, Note, Pill, Sheet, Stack, Steps, T, TextField, text } from './ui';
 
 const NAME_MAX = 40;
 const MAX_KEYS = 20;
@@ -32,14 +32,15 @@ export function useKeys() {
   useEffect(() => {
     void reload();
   }, [reload]);
-  return { keys, setKeys, error, reload };
+  const gen = useRef(0); // counts key changes made here (enable, disable, delete): an older list must not overwrite them
+  return { keys, setKeys, error, reload, gen };
 }
 
 /**
  * After a key is created: asks for the key list every 3 s, for at most 2 minutes and only while the page
  * is visible, until the new key has been used. Returns 'waiting' | 'connected' | 'timeout'.
  */
-export function useConnectionCheck(fresh: FreshKey | null, onKeys: (k: ApiKey[]) => void) {
+export function useConnectionCheck(fresh: FreshKey | null, onKeys: (k: ApiKey[]) => void, gen: RefObject<number>) {
   const [state, setState] = useState<'waiting' | 'connected' | 'timeout'>('waiting');
   const [round, setRound] = useState(0);
   useEffect(() => {
@@ -54,9 +55,10 @@ export function useConnectionCheck(fresh: FreshKey | null, onKeys: (k: ApiKey[])
       if (AppState.currentState === 'active') {
         // a hidden tab sends no requests
         try {
+          const at = gen.current;
           const { keys } = await api.keys();
           if (cancelled) return;
-          onKeys(keys);
+          if (at === gen.current) onKeys(keys); // else: a key changed while this list was on its way
           if (keys.find((k) => k.id === fresh.id)?.last_used_at) return setState('connected');
         } catch {
           // the next round tries again
@@ -69,11 +71,11 @@ export function useConnectionCheck(fresh: FreshKey | null, onKeys: (k: ApiKey[])
       cancelled = true;
       clearTimeout(t);
     };
-  }, [fresh, onKeys, round]);
+  }, [fresh, onKeys, round, gen]);
   return { state, again: () => setRound((r) => r + 1) };
 }
 
-export function KeysCard({ keys, error, reload, setKeys, onCreated, fresh, check }: {
+export function KeysCard({ keys, error, reload, setKeys, onCreated, fresh, check, gen }: {
   keys: ApiKey[] | null;
   error: string | null;
   reload: () => void;
@@ -81,6 +83,7 @@ export function KeysCard({ keys, error, reload, setKeys, onCreated, fresh, check
   onCreated: (k: FreshKey | null) => void;
   fresh: FreshKey | null;
   check: ReturnType<typeof useConnectionCheck>;
+  gen: RefObject<number>;
 }) {
   const [adding, setAdding] = useState(false);
   const [deleting, setDeleting] = useState<ApiKey | null>(null);
@@ -92,6 +95,7 @@ export function KeysCard({ keys, error, reload, setKeys, onCreated, fresh, check
     setRowError(null);
     try {
       await fn();
+      gen.current += 1;
       setKeys((await api.keys()).keys);
     } catch (e) {
       setRowError((e as Error).message);
@@ -105,8 +109,8 @@ export function KeysCard({ keys, error, reload, setKeys, onCreated, fresh, check
       <Stack>
         <View style={s.head}>
           <View style={s.fill}>
-            <T v="h2">API keys</T>
-            <T v="muted">Each agent gets its own key. A key works for agents only; it does not open this console.</T>
+            <T v="h2">Agent keys</T>
+            <T v="muted">For agents that cannot sign in through the browser. Each agent gets its own key. A key works for agents only; it does not open this console.</T>
           </View>
           {!adding && keys ? <Button label="New key" disabled={full} onPress={() => setAdding(true)} /> : null}
         </View>
@@ -136,9 +140,7 @@ export function KeysCard({ keys, error, reload, setKeys, onCreated, fresh, check
                     {k.name}
                   </Text>
                   <Text style={text.mono}>{k.prefix}…</Text>
-                  <Text style={text.fine}>
-                    Created {when(k.created_at)} · {k.last_used_at ? `last used ${ago(k.last_used_at)}` : 'never used'}
-                  </Text>
+                  <Text style={text.fine}>{`Created ${when(k.created_at)}. ${k.last_used_at ? `Last used ${ago(k.last_used_at)}.` : 'Never used.'}`}</Text>
                 </View>
                 <View>
                   <Pill label={k.disabled ? 'Disabled' : 'Active'} tone={k.disabled ? 'neutral' : 'ok'} />
@@ -152,7 +154,7 @@ export function KeysCard({ keys, error, reload, setKeys, onCreated, fresh, check
                     busy={busy === k.id}
                     onPress={() => act(k.id, () => api.updateKey(k.id, { disabled: !k.disabled }))}
                   />
-                  <Button label="Delete" a11yLabel={`Delete the key ${k.name}`} kind="danger" size="small" disabled={busy === k.id} onPress={() => setDeleting(k)} />
+                  <Button label="Delete" a11yLabel={`Delete the key ${k.name}`} kind="outline" size="small" disabled={busy === k.id} onPress={() => setDeleting(k)} />
                 </View>
               </View>
             ))}
@@ -247,11 +249,11 @@ export function SetupCard({ url, fresh }: { url: string; fresh: FreshKey | null 
   const c = setup(url, key)[client];
   const name = CLIENTS.find(([v]) => v === client)![1];
   return (
-    <Card label="Add CallEnvoy to an agent">
+    <Card label="Set up an agent with a key">
       <Stack>
         <View>
-          <T v="h2">Add CallEnvoy to an agent</T>
-          <T v="muted">Add this server to an AI agent, then ask it to make a call. You can follow every call here.</T>
+          <T v="h2">Set up an agent with a key</T>
+          <T v="muted">The same server, with a key in place of the browser sign-in.</T>
         </View>
         {!fresh && <Note kind="hint">Create a key above to fill this in. Until then the steps show YOUR_KEY.</Note>}
         <View>
@@ -267,6 +269,42 @@ export function SetupCard({ url, fresh }: { url: string; fresh: FreshKey | null 
         <Text style={text.subhead}>Let the agent set it up</Text>
         <T v="soft">Paste this into the agent. It adds the server, checks the connection and asks for your first call.</T>
         <CopyBlock code={installPrompt(url, key)} name="install prompt" />
+      </Stack>
+    </Card>
+  );
+}
+
+const SIGNIN_CLIENTS = [
+  ['claude_code', 'Claude Code'],
+  ['claude', 'Claude Desktop, claude.ai'],
+  ['chatgpt', 'ChatGPT'],
+  ['cursor', 'Cursor'],
+  ['codex', 'Codex'],
+] as const;
+
+/** The first way to connect: the agent opens the browser, the user presses Allow. No key to copy. */
+export function SignInCard({ url }: { url: string }) {
+  const [client, setClient] = useState<SignInClient>('claude_code');
+  const c = signInSetup(url)[client];
+  const name = SIGNIN_CLIENTS.find(([v]) => v === client)![1];
+  return (
+    <Card label="Sign in from your agent">
+      <Stack>
+        <View>
+          <View style={s.titleRow}>
+            <T v="h2" style={s.noMargin}>
+              Sign in from your agent
+            </T>
+            <Pill label="No key to copy" tone="done" />
+          </View>
+          <T v="muted">Give your agent the address. It opens your browser, and you allow it here. Then ask it to make a call.</T>
+        </View>
+        <Chips label="Agent" value={client} options={SIGNIN_CLIENTS} onChange={setClient} />
+        <View style={s.client}>
+          <CopyBlock code={c.code} name={`${name} set-up`} />
+          <Steps items={c.steps} />
+        </View>
+        <T v="fine">The agent then shows in the key list below with its name. Disable or delete it there to cut it off.</T>
       </Stack>
     </Card>
   );
@@ -323,8 +361,10 @@ const s = StyleSheet.create({
   keyText: { flexGrow: 1, flexShrink: 1, flexBasis: space.x5 * 4, gap: space.xxs },
   name: { color: color.fg, fontSize: font.size.body, fontWeight: font.weight.semi },
   actions: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: space.sm },
-  panel: { gap: space.ml, backgroundColor: color.card2, borderWidth: border.thin, borderColor: color.line, borderRadius: radius.l, padding: space.l },
+  panel: { gap: space.ml, backgroundColor: color.card2, borderRadius: radius.l, padding: space.l },
   client: { gap: space.sm },
   soft: { color: color.soft },
   bold: { fontWeight: font.weight.bold },
+  titleRow: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: space.ml, marginBottom: space.sm },
+  noMargin: { marginBottom: 0 },
 });

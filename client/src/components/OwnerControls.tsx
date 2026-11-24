@@ -6,7 +6,7 @@ import { api, type Call, type OwnerState } from '../api';
 import { phone } from '../format';
 import { LeaveGuardContext, useCalls, useLatest, useNow, useSettings } from '../hooks';
 import { guardLeave, micPermission, openAudio, watchMicPermission, type AudioLink } from '../platform/audio';
-import { color, countdownHeight, font, radius, space, useWide } from '../theme';
+import { border, color, countdownHeight, font, radius, space, useWide } from '../theme';
 import { secondsLeft } from './AlertBanner';
 import { AudioMeter, Button, Card, MicBlocked, Note, Sheet, T, text } from './ui';
 
@@ -33,6 +33,8 @@ export function OwnerControls({ call, callbackNumber }: { call: Call; callbackNu
   const audio = useRef<AudioLink | null>(null);
   const alive = useRef(true);
   const retries = useRef(RECONNECT_TRIES);
+  const opening = useRef(false); // connect() is running
+  const joinWanted = useRef(false); // Join was pressed while a listen-only link was still opening
   const ownerRef = useLatest(owner);
   const alertMax = useRef({ until: null as string | null, max: 0 });
 
@@ -62,6 +64,20 @@ export function OwnerControls({ call, callbackNumber }: { call: Call; callbackNu
 
   /** Opens the audio socket. `thenJoin` takes the call as soon as it is open. */
   const connect = async (thenJoin: boolean): Promise<void> => {
+    if (opening.current) {
+      // A link is already on its way (Listen, then Join pressed at once): no second link, but the join is kept.
+      if (thenJoin) joinWanted.current = true;
+      return;
+    }
+    opening.current = true;
+    try {
+      await open(thenJoin);
+    } finally {
+      opening.current = false;
+      joinWanted.current = false; // also after a failed attempt: a later Listen must stay listen-only
+    }
+  };
+  const open = async (thenJoin: boolean): Promise<void> => {
     setLink('connecting');
     setError(null);
     setMoved(false);
@@ -108,7 +124,9 @@ export function OwnerControls({ call, callbackNumber }: { call: Call; callbackNu
       },
     });
     audio.current = a;
-    if (thenJoin) await takeOver(a);
+    const join = thenJoin || joinWanted.current;
+    joinWanted.current = false;
+    if (join) await takeOver(a);
   };
 
   /** Opens the microphone (asking first if needed) and sends join. */
@@ -369,14 +387,14 @@ export function OwnerControls({ call, callbackNumber }: { call: Call; callbackNu
 
 const s = StyleSheet.create({
   panel: { gap: space.ml },
-  alerting: { borderColor: color.ok, backgroundColor: color.okSoft },
+  alerting: { borderColor: color.brand, borderWidth: border.outline }, // calm, but the one accent-framed thing on the page
   h2: { marginBottom: 0 },
-  big: { color: color.fg, fontSize: font.size.big, fontWeight: font.weight.heavy },
+  big: { fontFamily: font.display, color: color.fg, fontSize: font.size.h2, fontWeight: font.weight.bold },
   buttons: { gap: space.sm },
   buttonsWide: { flexDirection: 'row', flexWrap: 'wrap' },
   actions: { flexDirection: 'row', flexWrap: 'wrap', gap: space.sm },
   center: { alignSelf: 'center' },
-  countdown: { height: countdownHeight, backgroundColor: color.okLine, borderRadius: radius.pill, overflow: 'hidden' },
-  countdownFill: { height: '100%', backgroundColor: color.ok },
-  countdownText: { marginTop: space.s, color: color.okText },
+  countdown: { height: countdownHeight, backgroundColor: color.line, borderRadius: radius.pill, overflow: 'hidden' },
+  countdownFill: { height: '100%', backgroundColor: color.brand },
+  countdownText: { marginTop: space.s, color: color.soft, fontVariant: ['tabular-nums'] },
 });
