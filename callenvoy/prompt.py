@@ -158,8 +158,9 @@ def build_prompt(call: dict, profile: dict, secret_labels: list[str] | None = No
         "meanwhile. Only if ask_user returns no answer, say you do not have that detail right now and carry on.",
         "Everything you write is spoken aloud. Write only the words to say: no brackets, no notes, no stage directions.",
         "Accept an offer inside what you may accept (below) without asking. Anything outside it is a question for ask_user. "
-        "A voucher or credit in place of a refund, a cancellation, an upgrade or any other change to the account is "
-        "outside it unless the task or that section allows it.",
+        "A voucher, gift card or store credit in place of money back, a cancellation, an upgrade or any other change "
+        "to the account is outside it unless the task or that section allows it. A credit on the bill that cancels "
+        "out a wrong charge is the fix itself: accept it.",
         "A call screener (a phone assistant that asks for a name and the reason): give the name and the reason in one "
         "short sentence.",
         "Personal details (the profile list below) are shared one at a time, only when the call needs that detail and "
