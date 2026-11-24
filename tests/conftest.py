@@ -11,6 +11,7 @@ os.environ.update({
     "TWILIO_ACCOUNT_SID": "ACtest",
     "TWILIO_AUTH_TOKEN": "test-token",
     "TWILIO_FROM_NUMBER": "+19186021019",
+    "DEMO_LINE_NUMBER": "+16562405137",
     "PUBLIC_BASE_URL": "https://pragnyalabs.com/callenvoy",
     "OWNER_EMAIL": "Me@Example.com",  # the admin; its user is made by open_db and owns the env key
     # The server's own provider keys (fake; nothing here reaches the network) and the secret that encrypts users' keys

@@ -12,7 +12,7 @@ export default function TermsScreen() {
           'What you get',
           [
             'A service that places phone calls for you with an AI, and lets you listen in and take over. It is provided as it is, with no warranty. It can change, have limits, or stop.',
-            'A new account can call the demo line a few times for free. Calls to real numbers run on your own Twilio and OpenAI keys.',
+            'Calls to real numbers run on your own Twilio and OpenAI keys. Where a server has a demo line, a new account can call it a few times for free.',
           ],
         ],
         [
@@ -34,7 +34,7 @@ export default function TermsScreen() {
         ['Recordings', ['Calls are recorded unless you turn that off. Where the law requires everyone on a call to agree to a recording, getting that agreement is your responsibility.']],
         ['If the rules are broken', ['An account that breaks these rules can be disabled or removed.']],
         ['Liability', ['To the extent the law allows, the person who runs this service is not liable for damages that come from using it, including charges at your providers and the results of calls.']],
-        ['Contact', ['The issues page of the project: https://github.com/sreenivasanac/holdforme/issues']],
+        ['Contact', ['The issues page of the project: https://github.com/sreenivasanac/callenvoy/issues']],
       ]}
     />
   );

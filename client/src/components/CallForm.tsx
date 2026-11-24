@@ -1,5 +1,5 @@
 import { router } from 'expo-router';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import { api, ApiError, type Config, type Mode, type NewCall, type Settings } from '../api';
 import { phone, toE164 } from '../format';
@@ -7,7 +7,7 @@ import { useCallerId, useGo } from '../hooks';
 import { color, space, useWide } from '../theme';
 import { CallOptions, checkNumbers, MODE_OPTIONS, type Options } from './CallOptions';
 import { PROVIDER_COST } from './Providers';
-import { Button, Card, Note, Segmented, Stack, T, TextField, TextLink, text } from './ui';
+import { Button, Card, Field, Note, Segmented, Stack, SwitchRow, T, TextField, TextLink, text } from './ui';
 import { VoicePicker } from './VoicePicker';
 
 type Errors = Partial<Record<keyof NewCall | keyof Options | 'form', string>>;
@@ -18,6 +18,12 @@ const TO_SETTING: Record<string, keyof Options> = { record: 'record_calls', from
 
 /** `demo`: CallEnvoy's demo line, filled in for a first call. */
 export function CallForm({ config, settings, demo }: { config: Config; settings: Settings; demo?: Config['demo'] }) {
+  // The saved protected details (labels only): the user turns on the ones this call may give.
+  const [secrets, setSecrets] = useState<string[]>([]);
+  const [allowed, setAllowed] = useState<string[]>([]);
+  useEffect(() => {
+    api.secrets().then((x) => setSecrets(x.secrets.map((y) => y.label)), () => {}); // none shown if this fails: the call can still ask
+  }, []);
   const wide = useWide();
   const go = useGo();
   const named = !!settings.name; // the server refuses a call without the profile name
@@ -89,6 +95,7 @@ export function CallForm({ config, settings, demo }: { config: Config; settings:
       voice: f.voice,
       alert_wait_seconds: n.alert_wait_seconds,
       max_minutes: n.max_minutes,
+      ...(allowed.length ? { allow_secrets: allowed } : {}),
     };
     setBusy(true);
     try {
@@ -114,7 +121,7 @@ export function CallForm({ config, settings, demo }: { config: Config; settings:
   // Without own keys only the demo line can be called: say so before the user fills in a form that would fail.
   const keys = config.keys;
   const demoOnly = !!keys && !keys.ready;
-  if (demoOnly && (!demo || keys.demo_calls_left <= 0)) return <KeysNeeded left={keys.demo_calls_left} named={named} />;
+  if (demoOnly && (!demo || keys.demo_calls_left <= 0)) return <KeysNeeded left={config.demo ? keys.demo_calls_left : 0} named={named} demo={!!config.demo} />;
 
   return (
     <Card label="New call">
@@ -175,6 +182,15 @@ export function CallForm({ config, settings, demo }: { config: Config; settings:
           error={errors.facts}
         />
         <Segmented label="When a person answers" value={f.mode} options={MODE_OPTIONS} onChange={set('mode')} help={modeHelp} />
+        {secrets.length && !demo ? (
+          <Field label="This call may use" help="Your protected details. The call gives one you turn on here only when the business asks for it. For the others it asks you first.">
+            <View>
+              {secrets.map((label) => (
+                <SwitchRow key={label} title={label} value={allowed.includes(label)} onChange={(on) => setAllowed((a) => (on ? [...a, label] : a.filter((x) => x !== label)))} />
+              ))}
+            </View>
+          </Field>
+        ) : null}
 
         <Button
           label={more ? '▾ Fewer options' : '▸ More options (voice, recording, how to reach you)'}
@@ -249,7 +265,7 @@ export function CallForm({ config, settings, demo }: { config: Config; settings:
 }
 
 /** New call without own keys, and no demo call filled in (or none left): the two things the user can do. */
-function KeysNeeded({ left, named }: { left: number; named: boolean }) {
+function KeysNeeded({ left, named, demo }: { left: number; named: boolean; demo: boolean }) {
   const go = useGo();
   return (
     <Card label="New call">
@@ -261,11 +277,16 @@ function KeysNeeded({ left, named }: { left: number; named: boolean }) {
           <T v="soft">
             {left > 0
               ? `You have ${left} free demo call${left === 1 ? '' : 's'}. The demo line is a test phone line with a menu, a short hold, and a billing agent. It shows a whole call in about two minutes.`
-              : 'You have used your free demo calls.'}
+              : demo
+                ? 'You have used your free demo calls.'
+                : 'Calls run on your own Twilio and OpenAI accounts. Save the two keys once, then call any US or Canada number.'}
           </T>
         </View>
         <Note kind="hint">
-          <Text style={text.base}>Real numbers need your own Twilio and OpenAI keys. {PROVIDER_COST}</Text>
+          <Text style={text.base}>
+            {demo ? 'Real numbers need your own Twilio and OpenAI keys. ' : ''}
+            {PROVIDER_COST}
+          </Text>
         </Note>
         {left > 0 && !named ? <T v="fine">Save your name first (on the Calls page, or in Settings): the AI says who it calls for.</T> : null}
         <View style={s.choices}>

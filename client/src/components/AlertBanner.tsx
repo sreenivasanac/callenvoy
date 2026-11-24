@@ -17,8 +17,30 @@ export function AlertBanner() {
   const now = useNow();
   const wide = useWide();
   const path = usePathname();
-  // Not on the page of that call: its owner panel shows the alert there.
-  const call = calls?.find((c) => !c.finished && c.owner.state === 'alerting' && path !== `/calls/${c.id}`);
+  // Not on the page of that call: the call page shows it there.
+  const elsewhere = (c: Call) => !c.finished && path !== `/calls/${c.id}`;
+  // A request about a protected detail comes first: only the user can answer it, and the person on the phone waits.
+  const asking = calls?.find((c) => elsewhere(c) && c.open_questions.some((q) => q.kind));
+  if (asking) {
+    const q = asking.open_questions.find((x) => x.kind)!;
+    return (
+      <View style={s.banner}>
+        <View style={s.dot} aria-hidden {...PULSE} />
+        <View style={s.textBox}>
+          <Text role="alert" style={s.title}>
+            Your call to {asking.business} needs your OK
+          </Text>
+          <Text style={s.sub}>{`${q.question} The person on the phone is waiting.`}</Text>
+        </View>
+        <View style={[s.actions, !wide && s.actionsNarrow]}>
+          <View style={!wide && s.grow}>
+            <Button label="Answer" kind="go" onPress={() => go(`/calls/${asking.id}`)} full />
+          </View>
+        </View>
+      </View>
+    );
+  }
+  const call = calls?.find((c) => elsewhere(c) && c.owner.state === 'alerting');
   if (!call) return null;
   const left = secondsLeft(call, now);
   const transfer = call.mode === 'transfer' || !!call.connect_when;

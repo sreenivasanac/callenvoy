@@ -327,6 +327,49 @@ export function Segmented<V extends string>({
   );
 }
 
+/** A radio list where each choice has a title and one line about it (the AI model). */
+export function Choices<V extends string>({
+  label,
+  value,
+  options,
+  onChange,
+  help,
+}: {
+  label: string;
+  value: V;
+  options: readonly { id: V; title: string; about?: string; right?: string }[];
+  onChange: (v: V) => void;
+  help?: ReactNode;
+}) {
+  return (
+    <Field label={label} help={help}>
+      <View role="radiogroup" aria-label={label} style={s.choices}>
+        {options.map((o) => {
+          const on = o.id === value;
+          return (
+            <Pressable
+              key={o.id}
+              role="radio"
+              aria-checked={on}
+              onPress={() => onChange(o.id)}
+              style={(st: PressState) => [s.choice, on && s.choiceOn, !on && st.hovered && s.segHover]}
+            >
+              <View style={[s.choiceDot, on && s.choiceDotOn]} aria-hidden />
+              <View style={s.fill}>
+                <View style={s.choiceTop}>
+                  <Text style={[text.base, s.semi]}>{o.title}</Text>
+                  {o.right ? <Text style={[text.fine, s.choiceRight]}>{o.right}</Text> : null}
+                </View>
+                {o.about ? <Text style={text.fine}>{o.about}</Text> : null}
+              </View>
+            </Pressable>
+          );
+        })}
+      </View>
+    </Field>
+  );
+}
+
 /** A row of pill choices that wraps (filters, client tabs), as a radio group. */
 export function Chips<V extends string>({
   label,
@@ -566,6 +609,13 @@ const s = StyleSheet.create({
   segOn: { backgroundColor: color.card, borderColor: color.brand },
   segHover: { backgroundColor: color.card },
   chips: { flexDirection: 'row', flexWrap: 'wrap', gap: space.s },
+  choices: { gap: space.sm },
+  choice: { flexDirection: 'row', alignItems: 'center', gap: space.ml, paddingVertical: space.m, paddingHorizontal: space.ml, borderRadius: radius.m, borderWidth: border.thin, borderColor: color.line, backgroundColor: color.card },
+  choiceOn: { backgroundColor: color.selected, borderColor: color.brand },
+  choiceDot: { width: space.l, height: space.l, borderRadius: radius.pill, borderWidth: border.outline, borderColor: color.muted, flexShrink: 0 },
+  choiceDotOn: { borderColor: color.brand, backgroundColor: color.brand },
+  choiceTop: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'baseline', justifyContent: 'space-between', columnGap: space.ml },
+  choiceRight: { fontVariant: ['tabular-nums'] },
   chip: { paddingVertical: space.s, paddingHorizontal: space.l, borderRadius: radius.pill, borderWidth: border.thin, borderColor: color.line, backgroundColor: color.card },
   chipOn: { backgroundColor: color.fg, borderColor: color.fg },
   chipText: { color: color.soft, fontSize: font.size.m, fontWeight: font.weight.semi },

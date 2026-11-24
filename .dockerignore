@@ -1,0 +1,14 @@
+.git
+.venv
+data
+.env
+.env.*
+!.env.example
+client/node_modules
+client/dist
+client/.expo
+client/dev/shots
+**/__pycache__
+.pytest_cache
+tests
+docs

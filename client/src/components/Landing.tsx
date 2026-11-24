@@ -3,6 +3,7 @@
 import { router, useLocalSearchParams } from 'expo-router';
 import { type ReactNode, useEffect, useState } from 'react';
 import { Linking, Pressable, StyleSheet, Text, View } from 'react-native';
+import { useSession } from '../hooks';
 import { track } from '../platform/analytics';
 import { scrollToId } from '../platform/scroll';
 import { border, color, countdownHeight, font, gateWidth, heroColumns, lineHeight, radius, readWidth, space, useWide } from '../theme';
@@ -19,8 +20,9 @@ const STEPS = [
   ['It gets through the menu and the hold', 'It presses the menu keys and waits on hold, for as long as it takes. You do something else.'],
   ['It talks to the person, or brings you in', 'It handles the call and reports back: a short outcome, the transcript, and the recording. Or it alerts you when a person answers, and you take the call.'],
 ];
+const DEMO_FACT = ['The first call is free', 'Call our demo line: a test phone line with a menu, a hold, and a billing agent. It shows the whole thing in about two minutes.'];
+const SECRET_FACT = ['Secrets stay secret', 'An SSN or an account PIN is stored encrypted. The AI model never sees it: the server says it on the call, only when you allow it.'];
 const KEYS = [
-  ['The first call is free', 'Call our demo line: a test phone line with a menu, a hold, and a billing agent. It shows the whole thing in about two minutes.'],
   ['Real calls run on your accounts', 'You add your own Twilio key (the phone line) and OpenAI key (the AI). CallEnvoy places your calls with them and with nothing else.'],
   ['About 3 to 7 cents a minute, paid to them', 'Twilio and OpenAI bill you directly. CallEnvoy charges nothing and adds nothing on top.'],
 ];
@@ -28,7 +30,8 @@ const FAQ: [string, string][] = [
   ['Will they know it is an AI?', 'It says it is calling on your behalf. It does not announce that it is an AI. If someone sincerely asks, it says it is an AI assistant. It never claims to be you.'],
   ['Are calls recorded?', 'Yes at first, so you can hear what was said. You can turn recording off in Settings, or for one call. Some US states require everyone on a call to agree to a recording. That is your responsibility as the caller.'],
   ['Which numbers can it call?', 'Numbers in the US and Canada. Premium-rate numbers are blocked, and it cannot call emergency services.'],
-  ['What does it cost?', 'CallEnvoy is free. The demo line call costs you nothing. Real calls cost about 3 to 7 cents a minute, which you pay to your own Twilio and OpenAI accounts.'],
+  ['What does it cost?', 'CallEnvoy is free. Real calls cost about 3 to 7 cents a minute, which you pay to your own Twilio and OpenAI accounts. Each call\'s page shows an estimate of what it cost.'],
+  ['Can it give my Social Security number or a PIN?', 'Only if you allow it for that call. You save such a detail once, encrypted, or type it while the call runs. The AI model never sees the value: the server says it or keys it in, it is masked in the transcript, and the recording pauses while it is said.'],
   ['Is my data private?', 'Your calls, transcripts, recordings, and details are visible only to your account. The person who runs this server sees usage numbers, not what was said. Your provider keys are stored encrypted. You can delete your account and everything in it from Settings.'],
 ];
 
@@ -41,6 +44,8 @@ export function Landing() {
     if (signin) start(); // "Sign in" on another public page
   }, [signin]);
   const example = examples?.[0];
+  const { me } = useSession();
+  const demo = me?.demo !== false; // this server has a demo line (an older server does not say: then it has one)
   return (
     <PublicPage title="CallEnvoy: an AI that makes your phone calls" onSignIn={start}>
       <View style={[s.hero, wide && s.heroWide]}>
@@ -66,7 +71,7 @@ export function Landing() {
               }}
             />
           </View>
-          <T v="fine">Sign in with an email link. Your first call, to our demo line, is free.</T>
+          <T v="fine">{demo ? 'Sign in with an email link. Your first call, to our demo line, is free.' : 'Sign in with an email link. Calls run on your own Twilio and OpenAI keys.'}</T>
         </View>
         <View style={wide && { flex: heroColumns[1] }}>
           {example ? <ExampleCard example={example} id={ID.sample} /> : <Loading error={error} retry={retry} label="Loading the example call" />}
@@ -104,7 +109,7 @@ export function Landing() {
 
       <Section title="Your keys, your bill" intro="CallEnvoy is not a paid service. It is the software. The calls run on accounts you own.">
         <View style={[s.steps, wide && s.row]}>
-          {KEYS.map(([title, body]) => (
+          {[demo ? DEMO_FACT : SECRET_FACT, ...KEYS].map(([title, body]) => (
             <View key={title} style={[s.fact, wide && s.fill]}>
               <T v="h3">{title}</T>
               <T v="soft">{body}</T>
@@ -145,7 +150,7 @@ export function Landing() {
 
       <Section title="Questions">
         <View style={s.readable}>
-          {FAQ.map(([q, a]) => (
+          {FAQ.map(([q, a]) => (q === 'What does it cost?' && demo ? [q, a.replace('CallEnvoy is free.', 'CallEnvoy is free. The demo line call costs you nothing.')] : [q, a])).map(([q, a]) => (
             <Faq key={q} q={q} a={a} />
           ))}
           <TextLink label="Read the privacy page" onPress={() => router.push('/privacy')} />

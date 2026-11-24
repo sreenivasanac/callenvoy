@@ -12,6 +12,7 @@ import logging
 import re
 import sys
 from dataclasses import dataclass
+from urllib.parse import urlparse
 
 import httpx
 from cryptography.fernet import Fernet, InvalidToken
@@ -40,6 +41,7 @@ class Creds:
     openai: str
     deepgram: str = ""  # empty: OpenAI transcribes
     fish: str = ""  # empty: OpenAI speaks
+    llm: tuple[str, str, str] | None = None  # (base address, key, model) of another AI service, when saved
     own: bool = False
 
     @property
@@ -53,8 +55,10 @@ class Creds:
 
 def server() -> Creds:
     e = config.env
+    # Optional: another AI service for the admin's calls (a local model on a self-hosted server, for example).
+    other = (e("LLM_BASE_URL").rstrip("/"), e("LLM_API_KEY"), e("LLM_MODEL"))
     return Creds(e("TWILIO_ACCOUNT_SID"), e("TWILIO_AUTH_TOKEN"), e("TWILIO_FROM_NUMBER"), e("OPENAI_API_KEY"),
-                 e("DEEPGRAM_API_KEY"), e("FISH_API_KEY"))
+                 e("DEEPGRAM_API_KEY"), e("FISH_API_KEY"), llm=other if all(other) else None)
 
 
 # --- storage (encrypted JSON per user and provider) ---
@@ -86,8 +90,10 @@ def own(user_id: str) -> Creds | None:
     if not all(p in k for p in config.REQUIRED_PROVIDERS):
         return None
     t = k["twilio"]
+    other = k.get("llm")
     return Creds(t["account_sid"], t["auth_token"], t["from_number"], k["openai"]["api_key"],
-                 k.get("deepgram", {}).get("api_key", ""), k.get("fish", {}).get("api_key", ""), own=True)
+                 k.get("deepgram", {}).get("api_key", ""), k.get("fish", {}).get("api_key", ""),
+                 llm=(other["base_url"], other["api_key"], other["model"]) if other else None, own=True)
 
 
 def for_user(user: dict | None) -> Creds | None:
@@ -123,8 +129,12 @@ def view(user: dict) -> dict:
         if name == "twilio":
             providers[name] |= {"from_number": readable[name]["from_number"] if r else None,
                                 "note": readable[name].get("note") if r else None}
+        if name == "llm":
+            providers[name] |= {"base_url": readable[name]["base_url"] if r else None,
+                                "model": readable[name]["model"] if r else None}
     creds = for_user(user)
     return {"can_save": can_save(), "ready": creds is not None, "server_keys": bool(creds and not creds.own),
+            "llm_services": config.LLM_SERVICES, "llm_any_host": llm_any_host(),
             "hearing": (creds or server()).hearing, "voice_provider": (creds or server()).voice_provider,
             "inbound_url": f"{config.public_base_url()}/twilio/inbound/{user['id']}", "providers": providers}
 
@@ -180,7 +190,48 @@ async def _check_api_key(body: dict, provider: str, url: str, header: str, schem
     return {"api_key": key}
 
 
+def llm_any_host() -> bool:
+    return config.env("LLM_ANY_HOST") == "1"
+
+
+async def check_llm(body: dict) -> dict:
+    """Another AI service for the talking: an OpenAI-compatible address, a key and a model name. One tiny request
+    with a tool proves all three, and that the model can call tools (a call cannot press keys without them)."""
+    base = _text(body, "base_url", r"https?://[\x21-\x7e]{4,200}", "enter the service's address, starting with https://").rstrip("/")
+    known = {urlparse(u).netloc for u in config.LLM_SERVICES.values()}
+    if not llm_any_host() and (not base.startswith("https://") or urlparse(base).netloc not in known):
+        raise KeyError_("this server only allows these services: " + ", ".join(config.LLM_SERVICES) +
+                        ". On your own server, LLM_ANY_HOST=1 allows any address", "base_url")
+    key = _text(body, "api_key", r"[\x21-\x7e]{8,300}", "paste the API key")
+    model = _text(body, "model", r"[\x21-\x7e]{1,120}", "enter the model's name as the service lists it")
+    probe = {"model": model, "messages": [{"role": "user", "content": "Call the tool ok."}],
+             "tools": [{"type": "function", "function": {"name": "ok", "description": "Confirms the connection.",
+                                                         "parameters": {"type": "object", "properties": {}}}}]}
+    try:
+        async with httpx.AsyncClient(timeout=30, follow_redirects=False) as c:
+            r = await c.post(f"{base}/chat/completions", json=probe, headers={"Authorization": f"Bearer {key}"})
+    except httpx.HTTPError as e:
+        raise KeyError_("could not reach the service to check the key; try again in a moment", "base_url") from e
+    if r.status_code in (401, 403):
+        raise KeyError_("the service does not accept this key", "api_key")
+    if r.status_code >= 400:
+        try:
+            said = str((r.json().get("error") or {}).get("message") or "")[:200]
+        except (ValueError, AttributeError):
+            said = ""
+        raise KeyError_(f"the service refused the test request ({r.status_code}). {said}".strip(), "model")
+    try:
+        called = r.status_code < 300 and bool(r.json()["choices"][0]["message"].get("tool_calls"))
+    except (ValueError, LookupError, TypeError, AttributeError):
+        called = False
+    if not called:
+        raise KeyError_("the model answered, but did not call the test tool. A call needs a model that can use "
+                        "tools: it presses keys and ends the call with them", "model")
+    return {"base_url": base, "api_key": key, "model": model}
+
+
 CHECKS = {
+    "llm": check_llm,
     "twilio": check_twilio,
     # One model lookup: proves the key works and that the account can use the model the calls need.
     "openai": lambda b: _check_api_key(b, "OpenAI", f"https://api.openai.com/v1/models/{config.LLM_MODEL}", "Authorization", "Bearer"),
@@ -198,7 +249,7 @@ async def save(user_id: str, provider: str, body: dict) -> None:
     if not isinstance(body, dict):
         raise KeyError_("send a JSON object with the key fields")
     fields = await CHECKS[provider](body)
-    secret = fields.get("auth_token") or fields["api_key"]
+    secret = fields.get("auth_token") or fields["api_key"]  # (Twilio's hint is its account SID, below)
     shown = hint(fields["account_sid"]) if provider == "twilio" else hint(secret)
     store.save_provider_key(user_id, provider, _box().encrypt(json.dumps(fields).encode()).decode(), shown)
 

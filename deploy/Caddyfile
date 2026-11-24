@@ -1,0 +1,15 @@
+# Caddy for CallEnvoy (docker-compose.yml). WebSockets (call audio, Twilio streams) pass through
+# reverse_proxy as they are.
+{
+	# An agent key can be part of an address (/mcp/<key>). Caddy keeps no access log here, but it writes
+	# the full address into its error log when the service is down (during a restart, say). Those error
+	# lines are switched off so a key is never written anywhere. Checked with Caddy 2.
+	log default {
+		exclude http.log.error
+	}
+}
+
+{$DOMAIN} {
+	encode zstd gzip
+	reverse_proxy callenvoy:3021
+}

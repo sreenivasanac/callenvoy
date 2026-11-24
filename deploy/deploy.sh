@@ -8,6 +8,19 @@ UNIT="callenvoy"
 PORT=3021  # as in deploy/callenvoy.service and deploy/nginx.conf
 cd "$(dirname "$0")/.."
 
+# A restart cuts off calls that are running (their state is in memory): stop here if one is live.
+if [ "${FORCE:-}" != "1" ]; then
+  ssh "$HOST" "python3 - ~/$APP_DIR/data/callenvoy.db" <<'PY'
+import os, sqlite3, sys
+path = os.path.expanduser(sys.argv[1])
+if os.path.exists(path):
+    live = sqlite3.connect(f"file:{path}?mode=ro", uri=True).execute(
+        "select count(*) from calls where status in ('queued', 'dialing', 'in_progress')").fetchone()[0]
+    if live:
+        sys.exit(f"{live} call(s) are live: a restart would cut them off. Deploy when they have ended, or run with FORCE=1.")
+PY
+fi
+
 pnpm --dir client install --frozen-lockfile
 pnpm --dir client exec tsc --noEmit
 pnpm --dir client exec expo export --platform web

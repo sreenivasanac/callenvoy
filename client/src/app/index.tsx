@@ -8,16 +8,17 @@ import { Card, Chips, Screen, T, text } from '../components/ui';
 import { useCalls } from '../hooks';
 import { space, useWide } from '../theme';
 
-type Filter = 'all' | 'live' | 'done' | 'not_done';
+type Filter = 'all' | 'live' | 'done' | 'partial' | 'not_done';
 const FILTERS = [
   ['all', 'All'],
   ['live', 'Live'],
   ['done', 'Done'],
+  ['partial', 'Partly'],
   ['not_done', 'Not done'],
 ] as const;
-// "Done" is a finished call whose goal was reached; every other finished call is "Not done".
-const shows = (c: Call, f: Filter) =>
-  f === 'all' || (f === 'live' ? !c.finished : c.finished && (c.outcome?.result === 'done') === (f === 'done'));
+// A finished call is "Done" (goal reached), "Partly" (part of it), or "Not done" (everything else, failed calls too).
+const goal = (c: Call) => (c.outcome?.result === 'done' ? 'done' : c.outcome?.result === 'partial' ? 'partial' : 'not_done');
+const shows = (c: Call, f: Filter) => f === 'all' || (f === 'live' ? !c.finished : c.finished && goal(c) === f);
 
 /** Calls (home). Each call shows once: live calls as cards on top, finished calls in the list below. */
 export default function CallsScreen() {
@@ -66,7 +67,7 @@ export default function CallsScreen() {
               ) : null}
               <CallList calls={past} />
             </Card>
-          ) : filter === 'done' || filter === 'not_done' ? (
+          ) : filter !== 'all' && filter !== 'live' ? (
             <Card>
               <Text style={[text.muted, s.none]}>No calls with this status.</Text>
             </Card>

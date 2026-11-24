@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import { api, ApiError, type Config, type Mode, type ProfileField, type Settings } from '../api';
-import { phone, toE164 } from '../format';
+import { phone, sentence, toE164 } from '../format';
 import { useCallerId, useSettings } from '../hooks';
 import { scrollToId } from '../platform/scroll';
 import { border, color, font, maxContent, space } from '../theme';
@@ -11,10 +11,11 @@ import { AccountCard } from './Account';
 import { CallOptions, checkNumbers, MODE_OPTIONS, type Options } from './CallOptions';
 import { AudioCheck, DeviceAlerts } from './DeviceAlerts';
 import { ProviderKeysCard } from './Providers';
-import { Button, Card, Cell, Disclosure, Note, Pill, Row, Screen, Segmented, Stack, StatusLine, SwitchRow, T, TextField, TextLink, text } from './ui';
+import { ProtectedDetailsCard } from './Secrets';
+import { Button, Card, Cell, Choices, Disclosure, Note, Pill, Row, Screen, Segmented, Stack, StatusLine, SwitchRow, T, TextField, TextLink, text } from './ui';
 import { VoicePicker } from './VoicePicker';
 
-type TextKey = ProfileField | 'name' | 'details';
+type TextKey = ProfileField | 'name' | 'details' | 'timezone';
 // The inputs hold strings: null (not set) shows as empty, and an empty field is saved as "" (cleared).
 type Form = Omit<Settings, keyof Options | TextKey | 'callback_number'> & Options & Record<TextKey | 'callback_number', string>;
 type Errors = Partial<Record<keyof Settings | 'form', string>>;
@@ -50,7 +51,9 @@ const GROUPS: { title: string; fields: [ProfileField, string][] }[] = [
 const SECTIONS = [
   ['settings-profile', 'Profile'],
   ['settings-keys', 'Provider keys'],
+  ['settings-secrets', 'Protected details'],
   ['settings-defaults', 'Call defaults'],
+  ['settings-model', 'AI model'],
   ['settings-voice', 'Voice'],
   ['settings-alerts', 'Alerts'],
   ['settings-account', 'Account'],
@@ -209,6 +212,9 @@ export function SettingsForm({ config, settings, focus }: { config: Config; sett
             <Cell>{textField('date_of_birth', 'Date of birth')}</Cell>
           </Row>
           {textField('address', 'Address', { autoComplete: 'street-address' })}
+          {'timezone' in settings
+            ? textField('timezone', 'Your time zone', { autoCapitalize: 'none', autoCorrect: false, help: 'So the AI knows today\'s date and time. A name like America/Los_Angeles. Set from this browser at first.' })
+            : null}
           {textField('details', 'Anything else the AI may share', {
             rows: 4,
             help: 'Only what is written here, in the call request, or in your answers is shared. Leave out anything you would not say to a support agent.',
@@ -222,6 +228,7 @@ export function SettingsForm({ config, settings, focus }: { config: Config; sett
       </Card>
 
       <ProviderKeysCard id="settings-keys" />
+      <ProtectedDetailsCard id="settings-secrets" />
 
       <Card label="Call defaults" id="settings-defaults">
         <Stack>
@@ -257,6 +264,27 @@ export function SettingsForm({ config, settings, focus }: { config: Config; sett
           </View>
         </Stack>
       </Card>
+
+      {config.ai_models?.length ? (
+        <Card label="AI model" id="settings-model">
+          <Stack>
+            <View>
+              <T v="h2">AI model</T>
+              <T v="muted">The model that listens to the words and decides what to say and which key to press.</T>
+            </View>
+            <Choices
+              label="Model for your calls"
+              value={f.ai_model ?? config.ai_models[0].id}
+              options={config.ai_models.map((m) => ({ id: m.id, title: m.id === 'custom' ? 'Your own service' : m.id, about: m.id === 'custom' ? m.about.replace(/^your own service: /, '') : sentence(m.about), right: priceText(m.price) }))}
+              onChange={set('ai_model')}
+              help="Prices are the provider's list prices per 1 million tokens. A two-minute call uses about 15,000, most of them at the lower repeat rate."
+            />
+            <T v="fine">
+              A cheaper model can mishandle a phone menu or hang up too early. {config.demo ? 'Try a model on the demo line before you trust it with a real call.' : 'Try a model on a call that does not matter before you trust it with one that does.'}
+            </T>
+          </Stack>
+        </Card>
+      ) : null}
 
       <Card label="AI voice" id="settings-voice">
         <Stack>
@@ -295,6 +323,10 @@ export function SettingsForm({ config, settings, focus }: { config: Config; sett
     </Screen>
   );
 }
+
+const dollars = (n: number) => `$${n < 1 ? n.toFixed(2) : n.toFixed(n % 1 ? 2 : 0)}`;
+/** "$0.10 in, $0.50 out" per 1M tokens, or a note when the price is not known. */
+const priceText = (p: [number, number, number] | null) => (p ? `${dollars(p[0])} in, ${dollars(p[2])} out` : 'price not known');
 
 /** Callback number state for caller ID, with Verify (plan section 22.2). */
 function CallerIdStatus({ saved }: { saved: string | null }) {

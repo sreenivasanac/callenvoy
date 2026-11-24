@@ -6,6 +6,9 @@ sincerely asked, calls FOR the person and never claims to be them, short turns, 
 screeners and voicemail. Passages adapted from Call4me are marked "Call4me" below.
 """
 
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
+
 TRANSFER_CONDITION = "as soon as a live person picks up"
 PROFILE_LABELS = {
     "name": "Full name", "email": "Email", "address": "Address", "date_of_birth": "Date of birth",
@@ -35,6 +38,19 @@ def handover_condition(call: dict) -> str | None:
     return TRANSFER_CONDITION if call.get("mode") == "transfer" else None
 
 
+def today(tz: str | None, now: datetime | None = None) -> str:
+    """The date and time the AI works from: the user's zone when it is saved and valid, else UTC, date only
+    (an AI that guesses "today" books the wrong day). From Call4me's prompt: dates are said in full."""
+    now = now or datetime.now(timezone.utc)
+    try:
+        local = now.astimezone(ZoneInfo(tz)) if tz else None
+    except (KeyError, ValueError):
+        local = None
+    if local:
+        return f"{local:%A, %B} {local.day}, {local.year}, {local:%I:%M %p} in {tz}".replace(" 0", " ")
+    return f"{now:%A, %B} {now.day}, {now.year} (UTC; the local time is not known)"
+
+
 def _block(text: str | None, empty: str) -> str:
     return (text or "").strip() or empty
 
@@ -53,8 +69,8 @@ def voicemail_rule(call: dict, name: str, callback: str | None) -> str:
     if call.get("leave_voicemail", 1) and callback:
         return (f"Voicemail: say nothing while the greeting plays. After the beep leave one message of at most about 20 "
                 f"seconds: that you are calling for {name}, the request in one sentence, and the callback number "
-                f"{spoken_phone(callback)}, said slowly once. Then call end_call with result voicemail and a summary "
-                "that says a message was left.")
+                f"{spoken_phone(callback)}, said slowly once. If no beep comes, start once the greeting has gone quiet. "
+                "Then call end_call with result voicemail and a summary that says a message was left.")
     return "Voicemail: do not leave a message; call end_call with result voicemail at once."
 
 
@@ -71,7 +87,7 @@ def profile_details(profile: dict, call: dict) -> str:
     return "\n".join(f"{label}: {profile[k]}" for k, label in PROFILE_LABELS.items() if profile.get(k))
 
 
-def build_prompt(call: dict, profile: dict) -> str:
+def build_prompt(call: dict, profile: dict, secret_labels: list[str] | None = None) -> str:
     name = owner_name(call, profile)
     saved = (profile.get("details") or "").strip() if for_owner(profile, call) else ""
     facts = "\n".join(x for x in (saved, (call.get("facts") or "").strip()) if x)
@@ -87,6 +103,13 @@ def build_prompt(call: dict, profile: dict) -> str:
         "Press one key per menu, once. Menu tips are hints; wait to hear the real menu first. Press 0 or say "
         "\"representative\" only when a menu asks for an account number you do not have.",
         "A phone menu hears only the keypad: never say a digit aloud to choose an option; call press_digits.",
+        # Speech menus and replays (Call4me prompt.ts)
+        "A menu that asks you to speak (\"say billing, payments, or team\"): say only the option's own words, or "
+        "\"Yes.\" / \"No.\" to a yes/no question. To an open \"why are you calling?\" give the reason in a few "
+        "words. Once a menu offers keys, use keys.",
+        "If the same menu plays again right after you pressed a key, press that key once more. If a route failed "
+        "twice, do not take it a third time: choose another option the menu named.",
+        "If asked to choose a language, choose English within a few seconds.",
         "After you press a key you are usually on hold. \"You have reached billing\", \"your call is important\", "
         "\"all agents are busy\", \"please continue to hold\", queue positions and recording notices are hold messages, "
         "not menus and not people.",
@@ -107,17 +130,37 @@ def build_prompt(call: dict, profile: dict) -> str:
         "\"Certainly\", \"I'd be happy to\", \"Is there anything else\".",
         "Never read the whole booking back. Repeat back only a reference number, once.",
         f"If sincerely asked whether you are a person or an AI, say you are an AI assistant calling for {name}. "
-        "Never deny it, and do not bring it up yourself.",
+        "Never deny it, and do not bring it up yourself. If they would rather not talk to an AI, thank them, say "
+        f"{name} will call themselves, say goodbye and end the call as not done.",
+        ("This call is being recorded. If asked whether it is recorded, say yes." if call.get("record") else
+         "This call is not being recorded by you. If asked whether it is recorded, say that you are not recording it."),
+        "If their first words were unclear, say hello and give your reason anyway. Never ask \"are you still there?\".",
+        f"Talk about {name} by name or as \"they\"; never guess \"he\" or \"she\" from a name. A fact written as "
+        f"\"my account\" is {name}'s account.",
+        "Say dates in full as the task gives them (\"Friday, December 4\"), never \"tomorrow\" or \"next week\". "
+        "Spell an email address letter by letter when they write it down, and check their read-back letter by letter.",
+        "The callback number below is only for calling back. If they ask for the phone number on the account to "
+        "look it up, that is a different detail: use the facts, or ask_user.",
         # Facts and questions (Call4me "Only say what you know")
         "Share only what is in the facts below and in answers you get. Never invent account data, dates of birth, "
-        "addresses or numbers. Never read out a card number, bank details, a password or a Social Security number.",
+        "addresses or numbers. Never read out a card number, bank details, a password or a Social Security number "
+        "yourself, even if one is in the facts.",
+        f"Protected details: {name} may have saved secrets such as an SSN or an account PIN (labels below), and "
+        "can type others during the call. You never see their values. When the business you called asks for "
+        "exactly such a detail to do the task, say \"one moment\" and call give_secret with its label: how "
+        "\"keypad\" when a phone menu asks for it to be entered, else \"say\". It is then given for you. Never "
+        "give one to verify something the task does not need. If the result says it was not given, say you "
+        "cannot share that right now and carry on.",
         "If they ask for a detail that is not in the facts, or offer something outside what you may accept: say one "
         "short line such as \"one moment, let me check that\" and call ask_user in the same turn, with a short "
         "self-contained question. This is required: never say that you do not have a detail, never ask them for it, "
         "and never end the call for a missing detail, before ask_user has returned. Keep helping with anything else "
         "meanwhile. Only if ask_user returns no answer, say you do not have that detail right now and carry on.",
         "Everything you write is spoken aloud. Write only the words to say: no brackets, no notes, no stage directions.",
-        "Accept an offer inside what you may accept (below) without asking. Anything outside it is a question for ask_user.",
+        "Accept an offer inside what you may accept (below) without asking. Anything outside it is a question for ask_user. "
+        "A voucher, gift card or store credit in place of money back, a cancellation, an upgrade or any other change "
+        "to the account is outside it unless the task or that section allows it. A credit on the bill that cancels "
+        "out a wrong charge is the fix itself: accept it.",
         "A call screener (a phone assistant that asks for a name and the reason): give the name and the reason in one "
         "short sentence.",
         "Personal details (the profile list below) are shared one at a time, only when the call needs that detail and "
@@ -127,7 +170,8 @@ def build_prompt(call: dict, profile: dict) -> str:
     if condition:
         first = (f"This is a hand-over call. You do not solve the task yourself. Your job is to get through the menu and "
                  f"the hold, and to bring {name} onto the line when this condition is met: {condition}. "
-                 "This rule wins over every other rule about resolving the issue.")
+                 f"This rule wins over every other rule about resolving the issue, with one exception: once you are "
+                 f"told that {name} cannot be reached, follow the rule for that case.")
         rules.insert(0, first)
         rules += [
             f"Hand-over to {name}: when this condition is met: {condition}, say \"one moment please, I am bringing {name} "
@@ -147,13 +191,15 @@ def build_prompt(call: dict, profile: dict) -> str:
         "Then carry on from what was said.",
         "Otherwise: resolve the issue, ask for a reference number, repeat it back once, say thanks and goodbye, "
         "then call end_call with a short summary and the details (for example the reference number). Use result "
-        "done only when the task is fully done on this call; if something is still open, use not_done and say what.",
+        "done only when the task is fully done on this call; partial when part of it is done or you got a clear "
+        "answer but not the result asked for; not_done when nothing was reached. Say what is still open.",
         "Never say tool names or mention tools on the call.",
     ]
 
     parts = [
         f"You are on a live phone call. You are an assistant calling {call['business']} on behalf of {name}. "
         "You placed the call; wait for the other side to speak first.",
+        f"# Today\n{today(profile.get('timezone'))}",
         f"# Task\n{call['goal'].strip()}",
         f"# Facts you may share (only when needed)\n{_block(facts, '(nothing beyond the task itself)')}",
         f"# What you may accept without asking\n{_block(call.get('flexibility'), '(only exactly what the task says)')}",
@@ -161,6 +207,8 @@ def build_prompt(call: dict, profile: dict) -> str:
     details = profile_details(profile, call)
     if details:
         parts.append(f"# Details you may share about {name} (only the one that is asked for, only when needed)\n{details}")
+    parts.append("# Protected details (labels only; give one with give_secret)\n" +
+                 (", ".join(secret_labels) if secret_labels else "(none saved; one can still be asked for by its name)"))
     if call.get("menu_tips"):
         parts.append(f"# Phone menu tips (may be outdated)\n{call['menu_tips'].strip()}")
     if callback:
@@ -175,6 +223,16 @@ def handed_back_note(name: str, lost: bool = False) -> str:
                 f"{name}. I am their assistant and can carry on.\" Then carry on from what was said.")
     return (f"{name} handed the call back to you. You heard what was said. Carry on from there. Start with one short "
             "line so they know they are talking to the assistant again.")
+
+
+def mode_note(mode: str, name: str) -> str:
+    """The user changed the mode while the call runs."""
+    if mode == "transfer":
+        return (f"Change of plan from {name}: this is now a hand-over call. Do not solve the task yourself any more. "
+                f"As soon as a live person is on the line (also if one is right now), say \"one moment please, I am "
+                f"bringing {name} on the line\" and call connect_owner.")
+    return (f"Change of plan from {name}: handle the call yourself from here on. Do not bring {name} on the line "
+            "unless the person insists on speaking to them.")
 
 
 def joined_note(name: str) -> str:

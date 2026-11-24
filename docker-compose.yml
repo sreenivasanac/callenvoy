@@ -1,0 +1,30 @@
+# CallEnvoy with automatic HTTPS. Set DOMAIN and the keys in .env (copy .env.example), then:
+#   docker compose up -d --build
+# The step-by-step guide is docs/SELF_HOSTING.md.
+services:
+  callenvoy:
+    build: .
+    env_file: .env
+    environment:
+      # The public address comes from DOMAIN, so it is set in one place.
+      PUBLIC_BASE_URL: https://${DOMAIN:?set DOMAIN in .env, for example DOMAIN=calls.example.com}
+    volumes:
+      - ./data:/app/data   # the database and cached recordings: back this folder up
+    restart: unless-stopped
+
+  caddy:   # the web server in front: gets and renews the certificate for DOMAIN by itself
+    image: caddy:2
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+    depends_on:
+      - callenvoy
+    restart: unless-stopped
+
+volumes:
+  caddy_data:

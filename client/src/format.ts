@@ -1,5 +1,5 @@
 // Display text for calls: labels, numbers, times. Pure functions.
-import type { Call, Line } from './api';
+import type { Call, Cost, Evals, Line } from './api';
 
 export function phone(n: string) {
   const m = /^\+1(\d{3})(\d{3})(\d{4})$/.exec(n);
@@ -10,6 +10,22 @@ export function duration(sec: number) {
   const s = Math.max(0, Math.round(sec));
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 }
+
+/** A dollar amount of a call: "$0.08", and "under 1 cent" for the small parts. */
+export function money(n: number) {
+  return n > 0 && n < 0.005 ? 'under 1 cent' : `$${n.toFixed(2)}`;
+}
+
+/** "about $0.08", or "over $0.08" when the AI model's price is not known and so not in the total. */
+export function costText(c: Cost) {
+  // An incomplete total is a lower bound, so it is always a number ("over $0.00", never "over under 1 cent").
+  return c.complete ? `about ${money(c.total)}` : `over $${c.total.toFixed(2)}`;
+}
+
+/** A short text from the server ("the service does not accept this key") as a sentence. */
+export const sentence = (t: string) => t.charAt(0).toUpperCase() + t.slice(1) + (/[.!?]$/.test(t) ? '' : '.');
+
+export const ENDED_BY: Record<NonNullable<Evals['ended_by']>, string> = { ai: 'The AI', them: 'The other side', you: 'You', time_limit: 'The time limit' };
 
 export function callSeconds(c: Call, now = Date.now()) {
   if (c.talk_seconds != null && c.finished) return c.talk_seconds;
@@ -59,6 +75,7 @@ export function statusLabel(c: Call): { text: string; tone: Tone; live: boolean 
   }
   const byResult: Record<string, [string, Tone]> = {
     done: ['Done', 'done'],
+    partial: ['Partly done', 'hold'],
     not_done: ['Not done', 'neutral'],
     voicemail: ['Voicemail', 'neutral'],
     no_human: ['No person reached', 'neutral'],
@@ -76,6 +93,7 @@ export function statusLabel(c: Call): { text: string; tone: Tone; live: boolean 
 /** What the user is doing on the call, or asked to do. "alert" (the accent) only when the call waits for them. */
 export function ownerLabel(c: Call): { text: string; tone: Tone; live?: boolean } | null {
   if (c.finished) return null;
+  if (c.open_questions.some((q) => q.kind)) return { text: 'Needs your OK', tone: 'alert', live: true };
   switch (c.owner.state) {
     case 'alerting':
       return { text: 'Waiting for you', tone: 'alert', live: true };
@@ -112,6 +130,7 @@ export function modeLine(c: Call) {
 
 export const RESULT_TEXT: Record<string, string> = {
   done: 'Goal reached',
+  partial: 'Goal partly reached',
   not_done: 'Goal not reached',
   voicemail: 'Reached voicemail',
   no_human: 'No person answered',

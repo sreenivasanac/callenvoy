@@ -20,7 +20,7 @@ APP_NAME = "CallEnvoy"
 # Both come from PUBLIC_BASE_URL, so a new address is one line in .env and no code change.
 BASE_PATH = urlparse(public_base_url()).path.rstrip("/")  # "" at the root of a host
 PUBLIC_ORIGIN = "{0.scheme}://{0.netloc}".format(urlparse(public_base_url()))  # allowed Origin of console writes
-REPO_URL = "https://github.com/sreenivasanac/holdforme"
+REPO_URL = "https://github.com/sreenivasanac/callenvoy"
 TOOL_PREFIX = "callenvoy_"
 ROOT = Path(__file__).resolve().parent.parent
 DB_PATH = ROOT / "data" / "callenvoy.db"
@@ -32,9 +32,33 @@ DEV_ORIGIN = "http://localhost:8081"  # Expo web dev server, allowed only with C
 
 # --- Providers ---
 STT_MODEL = "nova-3-general"
-LLM_MODEL = "gpt-4.1"
-LLM_TEMPERATURE = 0
-SUMMARY_MODEL = "gpt-4.1"
+# AI models a user can pick (setting ai_model). Each one was run on the demo line before it was listed here.
+# `settings`: what the model needs in a chat-completions request with tools (the gpt-6 family refuses tools
+# unless reasoning is off; gpt-4.1 is tuned at temperature 0 and shuts down on 2027-01-14).
+LLM_MODELS = {
+    "gpt-6-luna": {"settings": {"extra": {"reasoning_effort": "none"}}, "about": "fast and the cheapest"},
+    "gpt-6.1-terra": {"settings": {"extra": {"reasoning_effort": "none"}}, "about": "stronger, about 10 times the price"},
+    "gpt-4.1": {"settings": {"temperature": 0}, "about": "the earlier default; OpenAI ends it on January 14, 2027"},
+}
+LLM_MODEL = "gpt-6-luna"  # the default
+CUSTOM_LLM = "custom"  # setting ai_model: the user's own OpenAI-compatible service (provider key "llm")
+# OpenAI-compatible services a user may point a call's AI at (their chat-completions base address). The server
+# sends every turn of a call to that address, so on a shared server only these known hosts are allowed: an
+# address a user types could otherwise aim the server at its own network. A self-hosted server can allow any
+# address, such as a local model, with LLM_ANY_HOST=1.
+LLM_SERVICES = {
+    "Google Gemini": "https://generativelanguage.googleapis.com/v1beta/openai",
+    "OpenRouter": "https://openrouter.ai/api/v1",
+    "Groq": "https://api.groq.com/openai/v1",
+    "Together": "https://api.together.xyz/v1",
+    "Fireworks": "https://api.fireworks.ai/inference/v1",
+    "Cerebras": "https://api.cerebras.ai/v1",
+    "DeepSeek": "https://api.deepseek.com/v1",
+    "Mistral": "https://api.mistral.ai/v1",
+    "xAI": "https://api.x.ai/v1",
+    "OpenAI": "https://api.openai.com/v1",
+}
+RECAP_MODEL = "gpt-6-luna"  # writes the outcome from the whole transcript after the call (always on the OpenAI key)
 TTS_MODEL = "s2.1-pro"
 # End of turn: Pipecat's default (LocalSmartTurnAnalyzerV3). TODO: SpeechTimeoutUserTurnStopStrategy if too slow on 2 vCPUs.
 CALL_SAMPLE_RATE = 8000
@@ -87,7 +111,7 @@ DEMO_CALLS_PER_USER = 3
 DEMO_MAX_MINUTES = 6
 DEMO_DAILY_MINUTE_CAP = 90  # all such calls of all users per day
 # Provider keys a user can save (keys.py). The required ones make real calls possible.
-PROVIDERS = ("twilio", "openai", "deepgram", "fish")
+PROVIDERS = ("twilio", "openai", "deepgram", "fish", "llm")  # llm: another AI service for the talking (optional)
 REQUIRED_PROVIDERS = ("twilio", "openai")
 HOLD_EXTENSION_MINUTES = 15
 TALK_EXTENSION_MINUTES = 2
@@ -108,7 +132,8 @@ BOT_DONE_GRACE_SECONDS = 30
 KEY_PRESS_REJOIN_SECONDS = 20  # after a key press the call must join its new stream in this time
 DIAL_TIMEOUT_SECONDS = 90  # no answer and no final status from Twilio in this time: the call is closed as failed
 CALLER_ID_CACHE_SECONDS = 60  # GET /api/caller-id caches Twilio's answer this long
-OUTCOMES = ("done", "not_done", "voicemail", "no_human")  # after the bot ends, wait this long for Twilio's final status
+# How a call's goal turned out. partial: some of it was done, or an answer came without the result asked for.
+OUTCOMES = ("done", "partial", "not_done", "voicemail", "no_human")
 RECORD_CALLS_DEFAULT = True
 FINAL_STATUSES = ("completed", "no_answer", "busy", "failed", "canceled")
 LIVE_STATUSES = ("queued", "dialing", "in_progress")
@@ -118,6 +143,32 @@ INBOUND_RING_SECONDS = 25  # forwarded callback rings the user this long
 # A callback is named after the user's newest outbound call to that number in this window.
 INBOUND_BUSINESS_DAYS = 14
 # TODO: SMS alerts (needs Twilio A2P 10DLC registration).
+
+# Protected details (vault.py)
+MAX_SECRETS = 20  # per user
+SECRET_MIN = 3  # letters or digits of one value (anything shorter cannot be told from ordinary words)
+SECRET_MAX = 200  # characters of one value
+SECRET_FISH_RATE = 16000  # sample rate asked of Fish for a spoken secret
+SECRET_QUIET_SECONDS = 20  # the recording stays paused this long after a secret was said (a read-back may follow)
+
+# Dead lines (the line's sound level is watched, so hold music is not taken for silence)
+SOUND_RMS = 150  # 16-bit audio quieter than this counts as silence
+SILENT_PICKUP_SECONDS = 6  # answered and nobody speaks: the AI says a short hello once
+DEAD_AIR_SECONDS = 75  # answered and no sound at all since: hang up
+SILENT_HOLD_MINUTES = 10  # on hold with no sound for this long: no more hold extensions
+QUIET_NUDGE_SECONDS = 30  # mid-call, no sound and no words for this long: the AI is asked to act (see calls._quiet_watch)
+QUIET_NUDGES_MAX = 3  # per call
+WRAP_UP_SECONDS = 40  # at the time limit in a live talk the AI gets this long to say goodbye
+
+# List prices in US dollars, read on 2026-11-24 (OpenAI, Twilio, Deepgram and Fish Audio pricing pages).
+# Used only to show a user an estimate of what a call cost on their own accounts: CallEnvoy bills nothing.
+PRICES = {
+    "twilio_minute": 0.014, "twilio_stream_minute": 0.004, "twilio_recording_minute": 0.0025,
+    "stt_minute": {"deepgram": 0.0077, "openai": 0.006},
+    "tts_1k_chars": {"fish": 0.015, "openai": 0.016},
+    # per 1M tokens: input, cached input, output
+    "llm_1m": {"gpt-6-luna": (0.10, 0.01, 0.50), "gpt-6.1-terra": (1.00, 0.05, 5.00), "gpt-4.1": (2.00, 0.50, 8.00)},
+}
 
 # --- Owner audio ---
 OWNER_DROP_GRACE_SECONDS = 5
@@ -150,7 +201,9 @@ SIGNIN_LIMIT_PER_ADDRESS = (3, 3600)
 SIGNIN_LIMIT_PER_IP = (10, 3600)
 SIGNIN_LIMIT_GLOBAL = (60, 86400)
 EMAIL_MAX = 254
-SIGNUPS_OPEN_DEFAULT = True  # the admin's "New sign-ups" switch (stored in the database once changed)
+# The admin's "New sign-ups" switch (stored in the database once changed). SIGNUPS_OPEN=0 starts a server
+# closed: only the admin (OWNER_EMAIL) can sign in until the admin opens it on the People page.
+SIGNUPS_OPEN_DEFAULT = env("SIGNUPS_OPEN", "1") != "0"
 USER_SEEN_WRITE_SECONDS = 60  # users.last_seen_at is written at most this often
 # Agent sign-in in the browser (oauth.py)
 OAUTH_REQUEST_SECONDS = 600  # the user has this long to sign in and approve
@@ -168,11 +221,13 @@ MAX_PUSH_DEVICES = 10
 # --- User settings (section 4a): one list, defaults here, saved values in the profile table ---
 SETTINGS: dict[str, dict] = {
     "name": {"type": "text", "max": 80, "default": None},
+    "timezone": {"type": "text", "max": 60, "default": None},  # IANA name, e.g. America/Los_Angeles (the console sets it)
     "callback_number": {"type": "phone", "default": None},
     "details": {"type": "text", "max": 3000, "default": None},
     "caller_id": {"type": "choice", "choices": ["callenvoy", "own"], "default": "callenvoy"},
     "leave_voicemail": {"type": "bool", "default": True},
     "voice": {"type": "choice", "choices": VOICE_NAMES, "default": DEFAULT_VOICE},
+    "ai_model": {"type": "choice", "choices": [*LLM_MODELS, CUSTOM_LLM], "default": LLM_MODEL},
     "record_calls": {"type": "bool", "default": RECORD_CALLS_DEFAULT},
     "max_minutes": {"type": "int", "min": 1, "max": MAX_CALL_MINUTES, "default": DEFAULT_CALL_MINUTES},
     "mode": {"type": "choice", "choices": ["handle", "transfer"], "default": "handle"},
@@ -208,17 +263,22 @@ DEMO_HOLD = [  # about 50 s of spoken hold messages with pauses between them
 ]
 DEMO_HOLD_PAUSE_SECONDS = 10
 DEMO_REP_NAME = "Maria"
+DEMO_REP_MODEL = "gpt-6.1-terra"  # the demo line's agent (the cheapest model hung up before the caller spoke)
 DEMO_BUSINESS = "Northstar Internet"
-DEMO_LINE_NUMBER = "+16562405137"  # answers only TWILIO_FROM_NUMBER, so calls to it always use that caller ID
+# The demo line is a second Twilio number of the server's account whose voice webhook is <address>/api/demo-line.
+# It answers only the server's own number (TWILIO_FROM_NUMBER), so calls to it always run on the server's keys.
+# Optional: without DEMO_LINE_NUMBER there is no demo line, and a user needs their own keys for any call.
+DEMO_LINE_NUMBER = env("DEMO_LINE_NUMBER").strip()
 DEMO_CALL = {  # GET /api/config "demo": pre-fills a first call to the demo line (the console's welcome step)
     "number": DEMO_LINE_NUMBER, "business": DEMO_BUSINESS,
     "goal": "Ask billing to remove a wrong charge of 30 dollars on the October bill and get a reference number.",
     "facts": "Service address: 12 Oak Street, Springfield.", "menu_tips": "Billing is option 1.",
-}
+} if DEMO_LINE_NUMBER else None
 
 
-REQUIRED_ENV = ("TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_FROM_NUMBER", "DEEPGRAM_API_KEY",
-                "OPENAI_API_KEY", "FISH_API_KEY")
+# The server's own accounts: a phone line and OpenAI. DEEPGRAM_API_KEY and FISH_API_KEY are optional extras
+# (hearing and voices), as they are for a user: without them OpenAI hears and speaks.
+REQUIRED_ENV = ("TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_FROM_NUMBER", "OPENAI_API_KEY")
 
 
 def dev_mode() -> bool:

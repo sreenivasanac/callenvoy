@@ -15,7 +15,8 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from . import auth, config, demo_line, guard, keys, owner, store, twilio_api
+from . import auth, config, demo_line, guard, keys, owner, push, store, twilio_api, vault
+from . import usage as metering  # (calls.usage is the admin's per-user numbers)
 
 log = logging.getLogger("callenvoy.calls")
 
@@ -94,6 +95,12 @@ class Live:
     tasks: list[asyncio.Task] = field(default_factory=list)  # watchdog, grace timers
     last_them: float = 0.0  # monotonic time of the last line from the other side
     last_talk: float = 0.0  # last line from anyone (them, ai, owner)
+    last_sound: float = 0.0  # monotonic time the line last carried any sound (speech, music, tones)
+    # Protected details (vault.py), all in memory for this call only:
+    allowed: set = field(default_factory=set)  # labels the user allowed during the call
+    typed: dict = field(default_factory=dict)  # label -> a value the user typed for this call (never stored)
+    masks: dict = field(default_factory=dict)  # label -> value that was given: masked in everything heard after
+    paused_until: float = 0.0  # monotonic time until which the recording stays paused (the latest secret said)
     answered: float = 0.0  # time.time() of the answer: the recording starts there
 
 
@@ -206,8 +213,8 @@ def resolve(inp: PlaceCallInput, profile: dict) -> dict:
 
 # --- Limits ---
 
-KEYS_NEEDED = ("real calls need your own Twilio and OpenAI keys: add them in the console under Settings > "
-               f"Provider keys. Without them you can call the demo line, {config.DEMO_LINE_NUMBER}")
+KEYS_NEEDED = ("real calls need your own Twilio and OpenAI keys: add them in the console under Settings > Provider keys."
+               + (f" Without them you can call the demo line, {config.DEMO_LINE_NUMBER}" if config.DEMO_LINE_NUMBER else ""))
 
 
 def _admin_id() -> str | None:
@@ -278,7 +285,9 @@ def url(path: str) -> str:
     return config.public_base_url() + path
 
 
-async def place_call(user_id: str, inp: PlaceCallInput) -> dict:
+async def place_call(user_id: str, inp: PlaceCallInput, allow_secrets: list | None = None) -> dict:
+    """`allow_secrets`: labels of saved protected details this call may give. Only the console passes it (the
+    user ticked them); a call placed by an agent has none, and the user is asked when the call needs one."""
     try:
         number = guard.check_number(inp.to)
     except ValueError as e:
@@ -289,7 +298,7 @@ async def place_call(user_id: str, inp: PlaceCallInput) -> dict:
         raise CallError("set your name first: the AI says it calls on your behalf. Save it with "
                         "callenvoy_save_profile (name) or in the console under Settings > Profile", field="name")
     # The demo line answers only the server's number, so a call to it always runs on the server's keys.
-    demo = number == config.DEMO_LINE_NUMBER
+    demo = bool(config.DEMO_LINE_NUMBER) and number == config.DEMO_LINE_NUMBER
     creds = keys.server() if demo else keys.for_user(user)
     if creds is None:
         raise CallError(KEYS_NEEDED, 403, field="keys", code="keys_needed")
@@ -312,6 +321,12 @@ async def place_call(user_id: str, inp: PlaceCallInput) -> dict:
                             "callenvoy_verify_number (or Settings > Verify) and type the code on that phone; or use "
                             'from "callenvoy"', field="from")
         from_number = own
+    allowed = []
+    for label in allow_secrets or []:
+        saved = vault.find(user_id, str(label))
+        if not saved:
+            raise CallError(f"no protected detail named {label}", field="allow_secrets")
+        allowed.append(saved["label"])
     seconds_left = check_limits(user, guest)
 
     call_id = store.new_id("c_")
@@ -328,6 +343,7 @@ async def place_call(user_id: str, inp: PlaceCallInput) -> dict:
         "ws_token": secrets.token_urlsafe(32),
         "direction": "outbound", "leave_voicemail": int(s["leave_voicemail"]),
         "from_number": from_number or creds.from_number or None, "own_keys": int(creds.own),
+        "secrets": json.dumps(allowed) if allowed else None,
     })
     LIVE[call_id] = Live()
     try:
@@ -416,17 +432,42 @@ def view(row: dict, since_line: int = 0, transcript: bool = True) -> dict:
         "leave_voicemail": bool(row["leave_voicemail"]),
         "human_at": row["human_at"],
         "owner": owner.view(cid),
-        "open_questions": [{"id": q["id"], "question": q["question"]} for q in qs if q["answer"] is None],
+        # kind: null (a plain question), "permission" (may the call use a saved protected detail?) or "secret"
+        # (type one for this call). The last two can only be answered by the user, in the console.
+        "open_questions": [{"id": q["id"], "question": q["question"], "kind": q["kind"], "label": q["label"]}
+                           for q in qs if q["answer"] is None],
+        "secrets_allowed": json.loads(row["secrets"]) if row.get("secrets") else [],
         "answered_questions": [{"id": q["id"], "question": q["question"], "answer": q["answer"]} for q in qs if q["answer"] is not None],
         "outcome": outcome,
         "talk_seconds": talk, "owner_seconds": row["owner_seconds"] or 0, "error": row["error"],
         "created_at": row["created_at"], "ended_at": row["ended_at"],
         "recordings": recordings(row),
+        "cost": metering.cost(row) if is_final(row) else None,
+        "evals": evals(row, qs),
     }
     if transcript:
         v["transcript"] = [_line_view(line, row["answered_at"]) for line in store.lines(cid, since_line)]
         v["next_line"] = store.next_line(cid)
     return v
+
+
+def evals(row: dict, qs: list[dict]) -> dict:
+    """Plain measures of how a call went, for the call list and for agents. Counted from the call's own
+    records, plus what the after-call recap found (follow_up, reached_person)."""
+    cid = row["id"]
+    events = [l["text"] for l in store.lines(cid) if l["who"] == "event"]
+    found = json.loads(row["evals"]) if row.get("evals") else {}
+    to_person = None
+    if row["human_at"] and row["answered_at"]:
+        to_person = max(0, int((_ts(row["human_at"]) - _ts(row["answered_at"])).total_seconds()))
+    ended_by = None
+    if is_final(row):
+        ended_by = ("time_limit" if any(e.startswith("time limit") for e in events) else
+                    "ai" if "AI ended the call" in events else
+                    "you" if "hang up requested" in events else "them")
+    return {"goal": row["outcome_result"], "reached_person": bool(row["human_at"]) or bool(found.get("reached_person")),
+            "seconds_to_person": to_person, "keys_pressed": sum(e.startswith("pressed ") for e in events),
+            "questions_asked": len(qs), "ended_by": ended_by, "follow_up": found.get("follow_up") or None}
 
 
 async def get_call(user_id: str, call_id: str, wait_seconds: int = 0, since_line: int = 0) -> dict:
@@ -482,6 +523,32 @@ async def stop_user_calls(user_id: str, drop: bool = False) -> None:
             await finish(r["id"])
 
 
+async def set_mode(user_id: str, call_id: str, mode: str | None = None, alert_on_human: bool | None = None) -> dict:
+    """Changes a live call's mode: "transfer" (bring the user on when a person answers) or "handle" (the AI does
+    the call), and whether the user is alerted when a person answers. The AI is told at once."""
+    row = must(user_id, call_id)
+    live = LIVE.get(call_id)
+    if is_final(row) or not live:
+        raise CallError("the call has ended", 409)
+    if mode not in (None, "handle", "transfer"):
+        raise CallError('mode must be "handle" or "transfer"', field="mode")
+    fields = {}
+    if mode and mode != row["mode"]:
+        fields["mode"] = mode
+    if alert_on_human is not None and int(alert_on_human) != row["alert_on_human"]:
+        fields["alert_on_human"] = int(alert_on_human)
+    if fields:
+        store.update_call(call_id, **fields)
+    if "mode" in fields:
+        from . import prompt  # (prompt imports nothing of ours; kept local to keep this module's imports short)
+        name = prompt.owner_name(row, get_profile(user_id))
+        event(call_id, "changed: bring me on when a person answers" if mode == "transfer" else "changed: the AI handles the call")
+        if live.bot:
+            talking = row["phase"] == "talking"  # a person is on the line now: act on it at once
+            await live.bot.tell(prompt.mode_note(mode, name), run_llm=talking and mode == "transfer")
+    return view(call_row(call_id), transcript=False)
+
+
 async def answer_question(user_id: str, call_id: str, question_id: str, answer: str) -> dict:
     row = must(user_id, call_id)
     q = store.get_question(question_id)
@@ -491,6 +558,9 @@ async def answer_question(user_id: str, call_id: str, question_id: str, answer: 
         raise CallError("the call has ended, so the answer cannot reach it", 409)
     if q["answer"] is not None:
         raise CallError("this question was already answered", 409, field="question_id")
+    if q["kind"]:  # an agent key must never be the one that allows or supplies a protected detail
+        raise CallError("only the user can answer this, in the CallEnvoy console (open the call there)", 403,
+                        field="question_id")
     answer = answer.strip()
     if not 1 <= len(answer) <= 1000:
         raise CallError("answer must be 1 to 1000 characters", field="answer")
@@ -505,9 +575,108 @@ async def answer_question(user_id: str, call_id: str, question_id: str, answer: 
     return {"question_id": question_id, "answer": answer}
 
 
-async def ask(call_id: str, question: str) -> str | None:
-    """Used by the bot's ask_user tool: saves the question and waits up to QUESTION_WAIT_SECONDS."""
-    qid = store.add_question(call_id, question)
+async def answer_secret(user_id: str, call_id: str, question_id: str, allow: bool, value: str | None = None) -> dict:
+    """The user's answer, from the console only, to a "permission" question (allow a saved protected detail on
+    this call) or a "secret" question (type one for this call; it is kept in memory until the call ends and never
+    stored). Nothing of the value goes into the question's saved answer or the transcript."""
+    row = must(user_id, call_id)
+    q = store.get_question(question_id)
+    if not q or q["call_id"] != call_id or not q["kind"]:
+        raise CallError(f"no such request {question_id} on this call", 404, field="question_id")
+    live = LIVE.get(call_id)
+    if is_final(row) or not live:
+        raise CallError("the call has ended", 409)
+    if q["answer"] is not None:
+        raise CallError("this was already answered", 409, field="question_id")
+    label = q["label"]
+    if allow and q["kind"] == "secret":
+        value = (value or "").strip()
+        if not vault.acceptable(value):
+            raise CallError(f"type the value ({config.SECRET_MIN} to {config.SECRET_MAX} letters or digits)", field="value")
+        live.typed[label] = value
+    elif allow:
+        live.allowed.add(label)
+        store.update_call(call_id, secrets=json.dumps(sorted({*json.loads(row["secrets"] or "[]"), label})))
+    said = ("given for this call (not stored)" if q["kind"] == "secret" else "allowed") if allow else "not allowed"
+    store.answer_question(question_id, said)
+    event(call_id, f"{label}: {said}")
+    fut = live.futures.pop(question_id, None)
+    if fut and not fut.done():
+        fut.set_result(allow)
+    return {"question_id": question_id, "answer": said}
+
+
+async def secret_for(call_id: str, label: str) -> tuple[str | None, str | None]:
+    """(label, value) of the protected detail the bot wants to give, or (label, None) when it may not be given.
+    A saved one needs the user's permission for this call (given when the call was placed in the console, or
+    asked now); an unknown label is asked of the user as a value to type. Waits for the answer like ask()."""
+    row, live = call_row(call_id), LIVE.get(call_id)
+    saved = vault.find(row["user_id"], label)
+    try:
+        name = saved["label"] if saved else vault.clean_label(label)
+    except vault.VaultError:
+        return None, None
+    if not live:
+        return name, None
+    if name in live.typed:
+        return name, live.typed[name]
+    if saved and name in {*json.loads(row["secrets"] or "[]"), *live.allowed}:
+        return name, vault.value(row["user_id"], name)
+    asyncio.create_task(push.send_alert(row, "secret"))  # best effort: the console is where this is answered
+    if saved:
+        ok = await ask(call_id, f"The call asks for your {name}. Allow it for this call?", "permission", name)
+        return name, vault.value(row["user_id"], name) if ok else None
+    ok = await ask(call_id, f"The call asks for: {name}. Type it to give it on this call only.", "secret", name)
+    return name, live.typed.get(name) if ok else None
+
+
+def gave_secret(call_id: str, label: str, value: str) -> None:
+    """From now on this value is masked in whatever the other side says (a read-back)."""
+    live = LIVE.get(call_id)
+    if live:
+        live.masks[label] = value
+
+
+def masks(call_id: str | None) -> dict:
+    live = LIVE.get(call_id or "")
+    return live.masks if live else {}
+
+
+async def pause_recording(call_id: str, seconds: float) -> bool:
+    """Keeps a spoken secret out of the recording: pauses it now and resumes it `seconds` from now. A second
+    secret within that time moves the resume to its own end (the call owns the pause, not the bot: a key press
+    may change the bot meanwhile). False: the recording could not be paused, and the secret must not be said.
+    A call that is not recorded has nothing to pause (True)."""
+    row, live = store.get_call(call_id), LIVE.get(call_id)
+    if not row or not live or is_final(row):
+        return False
+    if not (row["record"] and row["twilio_sid"]):
+        return True
+    try:
+        await twilio_api.pause_recording(keys.for_call(row), row["twilio_sid"], True)
+    except Exception as e:  # noqa: BLE001
+        log.warning("recording pause failed for %s: %s", call_id, type(e).__name__)
+        return False
+    live.paused_until = time.monotonic() + seconds
+    spawn(call_id, _resume_recording(call_id, seconds))
+    return True
+
+
+async def _resume_recording(call_id: str, after: float) -> None:
+    await asyncio.sleep(after)
+    row, live = store.get_call(call_id), LIVE.get(call_id)
+    if not row or not live or is_final(row) or time.monotonic() < live.paused_until - 0.5:
+        return  # the call ended, or a later secret keeps the pause
+    try:
+        await twilio_api.pause_recording(keys.for_call(row), row["twilio_sid"], False)
+    except Exception as e:  # noqa: BLE001
+        log.warning("recording resume failed for %s: %s", call_id, type(e).__name__)
+
+
+async def ask(call_id: str, question: str, kind: str | None = None, label: str | None = None):
+    """Used by the bot's ask_user tool: saves the question and waits up to QUESTION_WAIT_SECONDS for the answer
+    (text; for the kinds "permission" and "secret" True or False). None: no answer came."""
+    qid = store.add_question(call_id, question, kind, label)
     event(call_id, f"asked owner: {question}")
     live = LIVE.get(call_id)
     if not live:
@@ -519,6 +688,13 @@ async def ask(call_id: str, question: str) -> str | None:
     except TimeoutError:
         live.futures.pop(qid, None)
         return None
+
+
+def note_sound(call_id: str | None, at: float) -> None:
+    """The bot's ear heard something on the line (at most once a second)."""
+    live = LIVE.get(call_id or "")
+    if live:
+        live.last_sound = at
 
 
 def note_line(call_id: str, who: str) -> None:
@@ -557,6 +733,8 @@ def forget_caller_id() -> None:
 
 def demo_calls_left(user: dict) -> int:
     """Free calls to the demo line this user still has (the admin is not counted)."""
+    if not config.DEMO_LINE_NUMBER:
+        return 0
     if auth.is_admin(user):
         return config.DEMO_CALLS_PER_USER
     return max(0, config.DEMO_CALLS_PER_USER - store.demo_calls(user["id"]))
@@ -669,7 +847,7 @@ async def _stream_lost(call_id: str, bot) -> None:
             break
     live.moved_from = None
     store.update_call(call_id, ws_token=None)
-    await bot.summary_if_missing()
+    await bot.recap()
     await bot_finished(call_id)
 
 
@@ -733,9 +911,57 @@ async def stream_started(call_id: str, bot) -> None:
         answered(call_id)
         fields["answered_at"] = store.now()
     store.update_call(call_id, **fields)
+    live.last_sound = 0.0
     spawn(call_id, watchdog(call_id))
+    spawn(call_id, _dead_line(call_id))
     if row["listen_in"]:
         await owner.listen_in(call_id)
+
+
+async def _dead_line(call_id: str) -> None:
+    """After the pick-up: nobody speaks, so the AI says a short hello once (a person may be waiting for the
+    caller to start). No sound at all for DEAD_AIR_SECONDS: nobody is there, hang up."""
+    started = time.monotonic()
+    await asyncio.sleep(config.SILENT_PICKUP_SECONDS)
+    live = LIVE.get(call_id)
+    if not live:
+        return
+    if not live.last_talk:  # nobody has said a word yet
+        if live.bot:
+            await live.bot.say("Hello?")
+        await asyncio.sleep(config.DEAD_AIR_SECONDS - config.SILENT_PICKUP_SECONDS)
+        live, row = LIVE.get(call_id), store.get_call(call_id)
+        if not live or not row or is_final(row):
+            return
+        if not live.last_talk and live.last_sound < started:
+            event(call_id, "no sound on the line, hanging up")
+            store.update_call(call_id, outcome_result="no_human", outcome_summary="The call was answered, but there "
+                              "was no sound on the line.")
+            await stop_call(call_row(call_id))
+            return
+    await _quiet_watch(call_id)  # for the rest of the call, however it began
+
+
+QUIET_NOTE = ("The line has been silent for a while. If a person was talking with you, speak now: say why you are "
+              "calling, or repeat your last request. If you are on hold or in a menu, call wait.")
+
+
+async def _quiet_watch(call_id: str) -> None:
+    """A stall breaker. Sometimes both sides wait for each other (the model misread a person as a menu and
+    stayed silent). When the line carries no sound and nobody has said a word for QUIET_NUDGE_SECONDS, the AI is
+    told so once per silent stretch and decides: speak to the person, or keep waiting on a silent hold."""
+    told, nudges = False, 0
+    while nudges < config.QUIET_NUDGES_MAX:
+        await asyncio.sleep(5)
+        live, row = LIVE.get(call_id), store.get_call(call_id)
+        if not live or not row or is_final(row):
+            return
+        quiet = time.monotonic() - max(live.last_sound, live.last_talk)
+        if quiet < config.QUIET_NUDGE_SECONDS:
+            told = False
+        elif not told and live.bot and row["phase"] != "connecting_owner" and owner.view(call_id)["state"] != "on_call":
+            told, nudges = True, nudges + 1
+            await live.bot.tell(QUIET_NOTE, run_llm=True)
 
 
 async def bot_finished(call_id: str, bot=None) -> None:
@@ -788,13 +1014,17 @@ def _drop(call_id: str) -> Live | None:
 # --- Watchdog: max_minutes is a planned length, not a blind cut (Call4me time-limit.ts lesson) ---
 
 def next_deadline(now: float, deadline: float, started: float, phase: str | None, last_talk: float,
-                  owner_on_call: bool = False) -> float | None:
+                  owner_on_call: bool = False, last_sound: float | None = None) -> float | None:
     """At the planned end: on hold add HOLD_EXTENSION, in a live talk add TALK_EXTENSION, else None (hang up).
+    A hold whose line has been silent for SILENT_HOLD_MINUTES gets no more time (`last_sound`; None: not known).
     Never passes MAX_CALL_MINUTES after `started`."""
     ceiling = started + config.MAX_CALL_MINUTES * 60
     if now < deadline:
         return min(deadline, ceiling)
     if now >= ceiling:
+        return None
+    if phase == "on_hold" and not owner_on_call and last_sound is not None and (
+            now - last_sound > config.SILENT_HOLD_MINUTES * 60):
         return None
     if phase == "on_hold":
         new = now + config.HOLD_EXTENSION_MINUTES * 60
@@ -813,9 +1043,20 @@ async def watchdog(call_id: str) -> None:
         row, live = store.get_call(call_id), LIVE.get(call_id)
         if not row or not live or is_final(row):
             return
-        new = next_deadline(time.monotonic(), deadline, started, row["phase"], live.last_talk,
-                            owner.view(call_id)["state"] == "on_call")
+        on_call = owner.view(call_id)["state"] == "on_call"
+        new = next_deadline(time.monotonic(), deadline, started, row["phase"], live.last_talk, on_call,
+                            max(live.last_sound, started))
         if new is None:
+            # In a live talk (the hard ceiling was reached) the AI gets a moment to say goodbye first.
+            talking = live.last_talk and time.monotonic() - live.last_talk < config.TALK_RECENT_SECONDS
+            if talking and live.bot and not on_call:
+                event(call_id, "time limit reached, wrapping up")
+                await live.bot.tell("The time for this call is up. Say one short goodbye line now and call end_call.",
+                                    run_llm=True)
+                await asyncio.sleep(config.WRAP_UP_SECONDS)
+                row = store.get_call(call_id)
+                if not row or is_final(row):
+                    return
             event(call_id, "time limit reached, hanging up")
             await stop_call(call_row(call_id))
             return

@@ -37,6 +37,8 @@ def payload(row: dict, kind: str, shows_business: bool) -> dict:
         title, body = "You dropped off the call", "The AI carried on. Rejoin?"
     elif kind == "listen_in":
         title, body = "Call answered", (f"{biz} answered. Tap to listen." if biz else "The call was answered. Tap to listen.")
+    elif kind == "secret":
+        title, body = "Your call needs your OK", "It was asked for a protected detail. Tap to answer."
     elif kind == "test":
         title, body = "CallEnvoy alerts work", "This device will get call alerts."
     else:

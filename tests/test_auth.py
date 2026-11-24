@@ -128,7 +128,7 @@ def test_signin_token_one_use_and_expiry(client):
     session = r.cookies[config.SESSION_COOKIE]
     me = client.get("/callenvoy/api/auth/me", headers={"Cookie": f"ce_session={session}"}).json()
     assert me == {"signed_in": True, "email": "me@example.com", "mail_ready": False, "is_admin": True,
-                  "signups_open": True, "first_run": False}
+                  "signups_open": True, "first_run": False, "demo": True}
     r = client.post("/callenvoy/api/auth/verify", json={"token": token}, headers=ORIGIN)
     assert r.status_code == 400 and r.json()["code"] == "bad_link"  # used
     store.add_signin_token(auth.digest("old"), "me@example.com", "2000-01-01T00:00:00Z")
@@ -151,7 +151,7 @@ def test_signin_request_mail_and_rate_limit(client, monkeypatch):
     for k, v in {"SMTP_HOST": "smtp.example.com", "MAIL_FROM": "ce@example.com"}.items():
         monkeypatch.setenv(k, v)
     assert client.get("/callenvoy/api/auth/me").json() == {"signed_in": False, "email": None, "mail_ready": True,
-                                                           "is_admin": False, "signups_open": True, "first_run": False}
+                                                           "is_admin": False, "signups_open": True, "first_run": False, "demo": True}
     assert client.post("/callenvoy/api/auth/request", json={"email": "other@example.com"}).json() == {"ok": True}
     assert client.post("/callenvoy/api/auth/request", json={"email": " me@example.COM "}).json() == {"ok": True}
     assert mailed == ["other@example.com", "me@example.com"]  # open sign-up: any valid address gets a link

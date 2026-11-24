@@ -28,6 +28,7 @@ from pipecat.frames.frames import (
     Frame,
     FunctionCallResultProperties,
     InputAudioRawFrame,
+    InterimTranscriptionFrame,
     InterruptionFrame,
     LLMContextFrame,
     LLMMessagesAppendFrame,
@@ -35,6 +36,7 @@ from pipecat.frames.frames import (
     OutputAudioRawFrame,
     TranscriptionFrame,
     TTSAudioRawFrame,
+    TTSSpeakFrame,
 )
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.worker import PipelineParams, PipelineWorker
@@ -51,7 +53,7 @@ from pipecat.services.openai.tts import OpenAITTSService
 from pipecat.transports.websocket.fastapi import FastAPIWebsocketParams, FastAPIWebsocketTransport
 from pipecat.workers.runner import WorkerRunner
 
-from . import calls, config, owner, prompt, store, twilio_api
+from . import calls, config, owner, prompt, store, twilio_api, usage, vault
 
 log = logging.getLogger("callenvoy.bot")
 DIGITS = re.compile(r"^[0-9*#w]{1,20}$")
@@ -129,6 +131,24 @@ class OwnerGate(LLMGate):
         await self.broadcast_frame(InterruptionFrame)
 
 
+class SecretMask(FrameProcessor):
+    """Right after speech-to-text: a protected detail that was given on this call is masked in what the other
+    side says (a read-back), before the AI model or the transcript gets the words. `secrets` returns
+    label -> value for the call (empty for nearly every call)."""
+
+    def __init__(self, secrets, **kwargs):
+        super().__init__(**kwargs)
+        self._secrets = secrets
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+        if isinstance(frame, (TranscriptionFrame, InterimTranscriptionFrame)) and frame.text:
+            given = self._secrets()
+            if given:
+                frame.text = vault.mask(frame.text, given)
+        await self.push_frame(frame, direction)
+
+
 class LineSink(FrameProcessor):
     """End of the owner's speech-to-text pipeline: hands final transcriptions to a callback."""
 
@@ -158,6 +178,11 @@ TOOLS = {
         "ask_user", "Ask the person you call for a question you need answered (a detail you lack, or an offer outside "
         "what you may accept). Returns their answer, or tells you none came in time.",
         {"question": {"type": "string", "description": "short, self-contained question"}}, ["question"]),
+    "give_secret": _tool(
+        "give_secret", "Give the other side one protected detail of the person you call for (an SSN, a PIN), by "
+        "voice or on the keypad. You never see the value: it is said or keyed for you. Say \"one moment\" first.",
+        {"label": {"type": "string", "description": 'the detail\'s label, e.g. "SSN"'},
+         "how": {"type": "string", "enum": ["say", "keypad"]}}, ["label", "how"]),
     "connect_owner": _tool(
         "connect_owner", "Bring the person you call for onto the line. Say your one line first. If the result says "
         "they cannot be reached, do not call this again."),
@@ -186,30 +211,30 @@ class OpenAIHearing(OpenAIRealtimeSTTService):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self._held: list[bytes] = []
-        self._commit_held = False
+        self._held: list[bytes | None] = []  # audio chunks and, as None, the commits between them, in order
 
     async def _flush(self):
-        """Sends what was held, then the commit that was held with it. Only once the session is ready."""
+        """Sends what was held, in the order it came: one utterance's audio, its commit, the next one's audio."""
         held, self._held = self._held, []
-        for chunk in held:
-            await super()._send_audio(chunk)
-        if held and self._commit_held:
-            await super()._commit_audio_buffer()
-        self._commit_held = False
+        for item in held:
+            if item is None:
+                await super()._commit_audio_buffer()
+            else:
+                await super()._send_audio(item)
 
     async def _send_audio(self, audio: bytes):
         if not self._session_ready:
             self._held.append(audio)
-            while sum(map(len, self._held)) > self.HOLD_BYTES:
-                self._held.pop(0)
+            while sum(len(x) for x in self._held if x) > self.HOLD_BYTES:
+                self._held = self._held[1:]
             return
         await self._flush()
         await super()._send_audio(audio)
 
     async def _commit_audio_buffer(self):
-        if not self._session_ready:  # the speech ended before the session was ready: commit after the flush
-            self._commit_held = bool(self._held)
+        if not self._session_ready:  # the speech ended before the session was ready: its commit keeps its place
+            if self._held and self._held[-1] is not None:
+                self._held.append(None)
             return
         await self._flush()  # the session became ready between two audio frames: held speech goes out first
         await super()._commit_audio_buffer()
@@ -238,9 +263,43 @@ def speech(creds, voice_name: str | None, voice_id: str | None = None):
         instructions=config.OPENAI_TTS_STYLE))
 
 
-def save_outcome(call_id: str, result, summary, details=None) -> None:
+def save_outcome(call_id: str, result, summary, details=None, evals: dict | None = None) -> None:
+    fields = {"evals": json.dumps(evals)} if evals is not None else {}
     store.update_call(call_id, outcome_result=result if result in config.OUTCOMES else "not_done",
-                      outcome_summary=str(summary or "")[:1000], outcome_details=json.dumps(details or {}))
+                      outcome_summary=str(summary or "")[:1000],
+                      outcome_details=json.dumps(details if isinstance(details, dict) else {}), **fields)
+
+
+def thinking(creds, model: str | None = None):
+    """The LLM of a call: the user's chosen model on the account's OpenAI key, with the request settings that
+    model needs (config.LLM_MODELS); or, when they chose it and saved one, their own OpenAI-compatible service."""
+    if model == config.CUSTOM_LLM and creds.llm:
+        base, key, name = creds.llm
+        return OpenAILLMService(api_key=key, base_url=base, settings=OpenAILLMService.Settings(model=name))
+    model = model if model in config.LLM_MODELS else config.LLM_MODEL
+    return OpenAILLMService(api_key=creds.openai, settings=OpenAILLMService.Settings(
+        model=model, **config.LLM_MODELS[model]["settings"]))
+
+
+def _excerpt(transcript: str, head: int = 6000, tail: int = 18000) -> str:
+    """A very long transcript is cut in the middle (the long hold), not at the start: a result confirmed early
+    in the call must stay visible to the recap."""
+    if len(transcript) <= head + tail:
+        return transcript
+    return transcript[:head] + "\n[... the middle of the call is left out ...]\n" + transcript[-tail:]
+
+
+RECAP_PROMPT = """You grade a finished phone call that an AI assistant made for a person. You get the goal, what the
+assistant itself reported (it may be missing or too kind), and the whole transcript ("them" is the business, "ai"
+the assistant, "owner" the person who joined, "event" notes from the system). Judge only from the transcript.
+Return one JSON object:
+- "result": "done" (the goal was fully reached on this call), "partial" (part of it was reached, or a clear answer
+  came but not the result asked for), "not_done" (nothing was reached), "voicemail" (only a voicemail or answering
+  machine), or "no_human" (no live person and no usable answer).
+- "summary": one or two plain sentences on what happened. Name anything that differs from the goal.
+- "details": an object of facts worth keeping (reference number, name of the person, dates, amounts). {} if none.
+- "follow_up": what the person should do next, in one short sentence, or "" when nothing is left to do.
+- "reached_person": true when a live person spoke with the assistant."""
 
 
 def resume_messages(messages: list) -> list:
@@ -264,7 +323,7 @@ class CallBot:
 
     def __init__(self, websocket, stream_sid: str, twilio_call_sid: str, system_prompt: str, creds,
                  voice: str | None = None, voice_id: str | None = None,
-                 call_id: str | None = None, messages: list | None = None):
+                 call_id: str | None = None, messages: list | None = None, model: str | None = None):
         self.call_id = call_id
         self.creds = creds
         self.moved = False  # a key press moved the call to a new stream: this bot ends without a summary
@@ -283,9 +342,13 @@ class CallBot:
             audio_in_enabled=True, audio_out_enabled=True, add_wav_header=False, serializer=serializer,
             allowed_origins=[]))
         stt = hearing(creds)
-        self.llm = OpenAILLMService(api_key=creds.openai, settings=OpenAILLMService.Settings(
-            model=config.LLM_MODEL, temperature=config.LLM_TEMPERATURE))
+        self.llm = thinking(creds, model)
         tts = speech(creds, voice, voice_id)
+        self.meter = usage.Meter()
+        # What this bot runs on, kept with the call so that its cost can be estimated (usage.cost).
+        self.runs_on = {"llm": self.llm._settings.model, "stt": creds.hearing, "tts": creds.voice_provider}
+        ear = usage.Ear(lambda at: calls.note_sound(self.call_id, at))
+        mask = SecretMask(lambda: calls.masks(self.call_id))
         names = list(TOOLS) if call_id else ["end_call"]
         self.context = LLMContext(messages=messages or [{"role": "system", "content": system_prompt}],
                                   tools=ToolsSchema(standard_tools=[TOOLS[n] for n in names]))
@@ -295,17 +358,19 @@ class CallBot:
         self.gate = OwnerGate()
         self.tap = AudioBufferProcessor(sample_rate=config.CALL_SAMPLE_RATE, buffer_size=config.AUDIO_DOWN_BYTES)
         self.task = PipelineWorker(
-            Pipeline([self.transport.input(), stt, self.aggs.user(), self.llm_gate, self.llm, tts, self.gate,
-                      self.transport.output(), self.tap, self.aggs.assistant()]),
+            Pipeline([self.transport.input(), ear, stt, mask, self.aggs.user(), self.llm_gate, self.llm, tts, self.meter,
+                      self.gate, self.transport.output(), self.tap, self.aggs.assistant()]),
             params=PipelineParams(audio_in_sample_rate=config.CALL_SAMPLE_RATE,
-                                  audio_out_sample_rate=config.CALL_SAMPLE_RATE),
+                                  audio_out_sample_rate=config.CALL_SAMPLE_RATE,
+                                  enable_metrics=True, enable_usage_metrics=True),  # token and character counts
             idle_timeout_secs=None,  # the default 300 s would kill every long hold; our watchdog replaces it
             enable_rtvi=False)
 
         for n in names:
             # ask_user is async (the talk goes on) and has no Pipecat timeout: it waits QUESTION_WAIT_SECONDS for
-            # an answer, then for the hand-back if the owner has the call.
-            self.llm.register_function(n, getattr(self, f"_tool_{n}"), cancel_on_interruption=n != "ask_user")
+            # an answer, then for the hand-back if the owner has the call. give_secret may wait the same way.
+            self.llm.register_function(n, getattr(self, f"_tool_{n}"),
+                                       cancel_on_interruption=n not in ("ask_user", "give_secret"))
 
         @self.aggs.user().event_handler("on_user_turn_started")
         async def _them_start(_agg, _strategy):
@@ -349,8 +414,22 @@ class CallBot:
             if limit:
                 limit.cancel()
             await self._stop_owner_stt()
+            if self.call_id:
+                self.save_usage()
             if self.call_id and not self.moved:
-                await self.summary_if_missing()
+                await self.recap()
+
+    def save_usage(self, more: dict | None = None) -> None:
+        """Adds what this bot counted to the call (once per bot; a key press starts the next bot at zero)."""
+        row = store.get_call(self.call_id)
+        if row:
+            store.update_call(self.call_id, usage=usage.add(row["usage"], {**self.meter.used, **self.runs_on, **(more or {})}))
+        self.meter.used = dict.fromkeys(usage.COUNTERS, 0)
+
+    async def say(self, text: str) -> None:
+        """Speaks a fixed line without asking the LLM (the hello on a silent pick-up)."""
+        if not self.owner_has_call:
+            await self.task.queue_frame(TTSSpeakFrame(text))
 
     async def _limit(self, seconds: float) -> None:
         await asyncio.sleep(seconds)
@@ -412,6 +491,7 @@ class CallBot:
         text = (text or "").strip()
         if not text or not self.call_id:
             return
+        text = vault.mask(text, calls.masks(self.call_id))  # a second net behind SecretMask
         store.add_line(self.call_id, who, text, calls.line_at(self.call_id, self.turn_start.pop(who, None)))
         calls.note_line(self.call_id, who)
         if who == "ai":
@@ -426,6 +506,7 @@ class CallBot:
     async def _start_owner_stt(self, rate: int) -> None:
         """A second tiny pipeline (Deepgram -> sink) for the owner's speech, while the owner has the call."""
         async def on_text(text: str) -> None:
+            text = vault.mask(text, calls.masks(self.call_id))  # the owner may repeat a detail that was given
             store.add_line(self.call_id, "owner", text, calls.line_at(self.call_id))  # end of the words: no start time
             await self.tell(f"{self.owner_name} said to them: {text}", run_llm=False)
 
@@ -444,27 +525,35 @@ class CallBot:
                 pass
         self.owner_stt = self.owner_runner = None
 
-    async def summary_if_missing(self) -> None:
-        """The other side hung up before end_call: one short GPT request writes the outcome from the transcript."""
+    async def recap(self) -> None:
+        """After the call: one request grades the whole transcript and writes the outcome. The assistant's own
+        report from end_call is only a hint: people hang up before it runs, and it tends to grade itself kindly.
+        If the request fails, the assistant's report stays (or "not_done" when there was none)."""
         row = store.get_call(self.call_id)
-        if not row or row["outcome_result"]:
+        if not row:
             return
-        text = "\n".join(f"{l['who']}: {l['text']}" for l in store.lines(self.call_id) if l["who"] != "event")
-        if not text:
-            save_outcome(self.call_id, "no_human", "Nobody spoke on the call.")
+        lines = store.lines(self.call_id)
+        text = "\n".join(f"{l['who']}: {l['text']}" for l in lines)
+        if not any(l["who"] != "event" for l in lines):
+            save_outcome(self.call_id, "no_human", row["outcome_summary"] or "Nobody spoke on the call.", evals={})
             return
+        own = (f"{row['outcome_result']}: {row['outcome_summary']} {row['outcome_details'] or ''}"
+               if row["outcome_result"] else "(none: the call ended before the assistant reported)")
         try:
             r = await AsyncOpenAI(api_key=self.creds.openai).chat.completions.create(
-                model=config.SUMMARY_MODEL, temperature=0, response_format={"type": "json_object"},
-                messages=[{"role": "system", "content":
-                           f"Phone call goal: {row['goal']}\nReturn JSON: {{\"result\": one of "
-                           f"{', '.join(config.OUTCOMES)}, \"summary\": one or two sentences, \"details\": object of "
-                           "facts like reference numbers}."}, {"role": "user", "content": text[-12000:]}])
+                model=config.RECAP_MODEL, response_format={"type": "json_object"},
+                **config.LLM_MODELS[config.RECAP_MODEL]["settings"].get("extra", {}),
+                messages=[{"role": "system", "content": RECAP_PROMPT},
+                          {"role": "user", "content": f"Goal: {row['goal']}\n\nThe assistant's own report: {own}\n\n"
+                                                      f"Transcript:\n{_excerpt(text)}"}])
             out = json.loads(r.choices[0].message.content or "{}")
-            save_outcome(self.call_id, out.get("result"), out.get("summary"), out.get("details"))
+            save_outcome(self.call_id, out.get("result"), out.get("summary"), out.get("details"),
+                         evals={"follow_up": str(out.get("follow_up") or "")[:300],
+                                "reached_person": bool(out.get("reached_person"))})
         except Exception as e:  # noqa: BLE001
-            log.warning("summary failed for %s: %s", self.call_id, e)
-            save_outcome(self.call_id, "not_done", "The other side hung up.")
+            log.warning("recap failed for %s: %s", self.call_id, type(e).__name__)
+            if not row["outcome_result"]:
+                save_outcome(self.call_id, "not_done", "The call ended before the assistant reported a result.")
 
     # --- the bot's tools ---
 
@@ -511,6 +600,60 @@ class CallBot:
             answer if answer is not None else
             "No answer yet. Say you do not have that detail right now and carry on. A later answer may still arrive.")
 
+    async def _tool_give_secret(self, params) -> None:
+        """Says or keys a protected detail without the value ever entering the model's context (vault.py)."""
+        if self.owner_has_call:
+            await params.result_callback(OWNER_HAS_CALL, properties=NO_LLM)
+            return
+        how = params.arguments.get("how")
+        label, value = await calls.secret_for(self.call_id, str(params.arguments.get("label", "")))
+        await self.released.wait()  # an answer during a take-over waits for the hand-back
+        if not value:
+            await params.result_callback(f"The {label or 'detail'} was not given. Say you cannot share that right "
+                                         "now, and carry on with the rest.")
+            return
+        if how == "keypad":
+            keyed = vault.digits(value)
+            if not DIGITS.match(keyed):
+                await params.result_callback("This detail cannot be keyed in. Give it with how \"say\".")
+                return
+            store.update_call(self.call_id, phase="menu")
+            calls.event(self.call_id, f"keyed in {label}")
+            self.moved = True
+            try:
+                await calls.press_keys(self.call_id, keyed, self)
+            except Exception as e:  # noqa: BLE001
+                self.moved = False
+                log.warning("keying a protected detail failed for %s: %s", self.call_id, type(e).__name__)
+                await params.result_callback("The keys could not be sent. Try once more.")
+                return
+            await params.result_callback("keyed in", properties=NO_LLM)
+            return
+        try:
+            pcm, rate = await vault.speech(self.creds, store.get_call(self.call_id)["voice"], vault.spoken(value))
+        except Exception as e:  # noqa: BLE001
+            log.warning("speaking a protected detail failed for %s: %s", self.call_id, type(e).__name__)
+            await params.result_callback("It could not be said just now. Try once more.")
+            return
+        seconds = len(pcm) / 2 / rate
+        if not await calls.pause_recording(self.call_id, seconds + config.SECRET_QUIET_SECONDS):
+            await params.result_callback("It could not be given safely just now. Say you cannot share that right "
+                                         "now, and carry on with the rest.")
+            return
+        if self.owner_has_call:  # the owner took the call while this was prepared: it is theirs to say now
+            await params.result_callback(OWNER_HAS_CALL, properties=NO_LLM)
+            return
+        calls.gave_secret(self.call_id, label, value)
+        self.gate.tones_until = time.monotonic() + seconds + 0.5  # their "uh-huh" must not cut it off
+        await self.gate.feed(pcm, rate)
+        calls.event(self.call_id, f"gave {label} by voice")
+        await asyncio.sleep(seconds)  # it plays before the model speaks again
+        await params.result_callback(
+            f"The {label} was just said aloud to them, slowly. You cannot say it yourself, so never tell them that "
+            f"you cannot share it: if they ask for it again or did not catch it, call give_secret again. If they "
+            f"read it back, a correct read-back appears to you as [{label}]; any other number they say is wrong, "
+            "and you call give_secret again.")
+
     async def _tool_connect_owner(self, params) -> None:
         if self.owner_has_call:
             await params.result_callback(OWNER_HAS_CALL, properties=NO_LLM)
@@ -544,6 +687,13 @@ class CallBot:
             await params.result_callback(OWNER_HAS_CALL, properties=NO_LLM)
             return
         args = params.arguments
+        live = calls.LIVE.get(self.call_id or "")
+        if live and live.futures:
+            # A backstop for a rule the cheaper models break: no hanging up while the user is being asked.
+            await params.result_callback("You asked the person you call for a question and the answer has not "
+                                         "arrived yet. Do not end the call: tell them you are still checking, and "
+                                         "wait. If no answer comes, you will be told.")
+            return
         if self.call_id:
             save_outcome(self.call_id, args.get("result"), args.get("summary"), args.get("details"))
             calls.event(self.call_id, "AI ended the call")

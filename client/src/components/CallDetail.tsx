@@ -1,15 +1,15 @@
 // Parts of the call screen: header, transcript (with the recording player when finished), question box, outcome, call options.
 import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View, type PressableStateCallbackType, type ScrollViewInstance } from 'react-native';
-import { api, type Call, type Line, type Question } from '../api';
-import { callSeconds, clock, duration, lineAt, mergeLines, modeLine, phone, RESULT_TEXT, statusLabel, stepIndex, when } from '../format';
+import { api, ApiError, type Call, type Line, type Mode, type Question } from '../api';
+import { callSeconds, clock, costText, duration, ENDED_BY, lineAt, mergeLines, modeLine, money, phone, RESULT_TEXT, statusLabel, stepIndex, when } from '../format';
 import { useNow } from '../hooks';
 import { focusRingProps } from '../platform/focus';
 import { border, color, font, lineHeight, lineMaxWidth, radius, space, transcriptHeight, useWide } from '../theme';
 import { CallLine } from './CallLine';
 import { StatusBadge } from './CallList';
 import { RecordingPlayer, usePlayer, type PlayerControl } from './RecordingPlayer';
-import { Button, Card, Disclosure, LiveDot, Note, Pill, T, TextField, text } from './ui';
+import { Button, Card, Disclosure, LiveDot, Note, Pill, Segmented, Stack, SwitchRow, T, TextField, text } from './ui';
 
 const HAND_SCROLL_PAUSE_MS = 5000; // no automatic scrolling this long after the reader scrolled the transcript
 const AUTO_SCROLL_MS = 1000; // scroll events this soon after an automatic scroll are not the reader's
@@ -47,6 +47,7 @@ export function CallHeader({ call }: { call: Call }) {
         <>
           <Text style={[text.body, s.goal]}>{call.goal}</Text>
           <Text style={[text.fine, s.mode]}>{modeLine(call)}</Text>
+          {call.secrets_allowed?.length ? <Text style={[text.fine, s.mode]}>{`May use: ${call.secrets_allowed.join(', ')}`}</Text> : null}
           <CallLine at={stepIndex(call)} tone={statusLabel(call).tone} />
         </>
       )}
@@ -222,13 +223,136 @@ export function QuestionBox({ callId, q }: { callId: string; q: Question }) {
   );
 }
 
+/** A request about a protected detail: allow a saved one on this call, or type one for it. Only the console can
+ *  answer, and the person on the phone is waiting, so this sits at the top of the call page. */
+export function SecretBox({ callId, q }: { callId: string; q: Question }) {
+  const typed = q.kind === 'secret';
+  const [value, setValue] = useState('');
+  const [busy, setBusy] = useState<'yes' | 'no' | null>(null);
+  const [sent, setSent] = useState<boolean | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [fieldError, setFieldError] = useState<string | null>(null);
+  const send = async (allow: boolean) => {
+    setError(null);
+    setFieldError(null);
+    if (allow && typed && !value.trim()) return setFieldError(`Type the ${q.label ?? 'detail'} first.`);
+    setBusy(allow ? 'yes' : 'no');
+    try {
+      await api.answerSecret(callId, q.id, allow, allow && typed ? value.trim() : undefined);
+      setValue(''); // the value does not stay in the page
+      setSent(allow); // the request leaves the list on the next update
+    } catch (e) {
+      if (e instanceof ApiError && e.field === 'value') setFieldError(e.message);
+      else setError((e as Error).message);
+    }
+    setBusy(null);
+  };
+  return (
+    <View style={s.question} role="region" aria-label="The call needs your OK">
+      <Text role="alert" style={s.qTitle}>
+        The call needs your OK. The person on the phone is waiting.
+      </Text>
+      <Text style={s.q}>{q.question}</Text>
+      {sent != null ? (
+        <Note kind="saved">{sent ? (typed ? 'Given. It is said on the call now, and not stored.' : 'Allowed. It is given on the call now.') : 'Not given. The AI says it cannot share that.'}</Note>
+      ) : (
+        <>
+          {typed ? (
+            <TextField
+              label={q.label ?? 'The detail'}
+              value={value}
+              onChangeText={setValue}
+              secureTextEntry
+              autoCapitalize="none"
+              autoCorrect={false}
+              autoComplete="off"
+              maxLength={200}
+              help="Used on this call only. It is not stored, not shown in the transcript, and the AI model does not see it."
+              error={fieldError}
+              onSubmitEditing={() => void send(true)}
+            />
+          ) : (
+            <Text style={text.fine}>The AI model does not see the value. The server says it or keys it in, and it is masked in the transcript.</Text>
+          )}
+          {error ? (
+            <Text role="alert" style={text.err}>
+              {error}
+            </Text>
+          ) : null}
+          <View style={s.answers}>
+            <Button label={busy === 'yes' ? 'Sending...' : typed ? 'Give it' : 'Allow'} busy={busy === 'yes'} disabled={busy === 'no'} onPress={() => void send(true)} />
+            <Button label={typed ? "Don't give" : "Don't allow"} kind="secondary" busy={busy === 'no'} disabled={busy === 'yes'} onPress={() => void send(false)} />
+          </View>
+        </>
+      )}
+    </View>
+  );
+}
+
+const LIVE_MODES = [
+  ['handle', 'The AI handles the call'],
+  ['transfer', 'Bring me on when a person answers'],
+] as const;
+
+/** While the call runs: who handles it, and whether the user is alerted when a person answers. The AI is told at once. */
+export function ModeSwitch({ call }: { call: Call }) {
+  // What the user chose shows at once; the call's own values take over again when the next update brings them.
+  const [chosen, setChosen] = useState<{ mode?: Mode; alert_on_human?: boolean }>({});
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => setChosen({}), [call.mode, call.alert_on_human]);
+  const change = async (patch: { mode?: Mode; alert_on_human?: boolean }) => {
+    setError(null);
+    setChosen((c) => ({ ...c, ...patch }));
+    try {
+      await api.setMode(call.id, patch);
+    } catch (e) {
+      setChosen({});
+      setError((e as Error).message);
+    }
+  };
+  const mode = chosen.mode ?? call.mode;
+  return (
+    <Card label="How this call is handled">
+      <Stack gap={space.ml}>
+      <T v="h3" level={2} style={s.h2}>
+        How this call is handled
+      </T>
+      <Segmented
+        label="When a person answers"
+        value={mode}
+        options={LIVE_MODES}
+        onChange={(m) => void change({ mode: m })}
+        help={mode === 'transfer' ? 'The AI gets through the menu and the hold, then brings you on.' : 'The AI does the whole call. You can still listen or join.'}
+      />
+      <SwitchRow title="Alert me when a person answers" value={chosen.alert_on_human ?? call.alert_on_human} onChange={(v) => void change({ alert_on_human: v })} />
+      {error ? (
+        <Text role="alert" style={text.err}>
+          {error}
+        </Text>
+      ) : null}
+      </Stack>
+    </Card>
+  );
+}
+
+/** A finished call: did it reach its goal, what to do next, the facts it brought back, and how it went. */
 export function OutcomeCard({ call, level }: { call: Call; level?: 3 }) {
   const st = statusLabel(call);
   const o = call.outcome;
   const details = Object.entries(o?.details ?? {}).filter(([, v]) => v != null && v !== '');
-  if (call.owner_seconds) details.push(['you_on_the_call', duration(call.owner_seconds)]);
+  const e = call.evals;
+  const cost = call.cost;
+  // Plain measures of the call, each shown only when there is something to say.
+  const went: [string, string][] = [];
+  if (e?.seconds_to_person != null) went.push(['A person answered after', duration(e.seconds_to_person)]);
+  else if (e && call.status === 'completed' && !e.reached_person) went.push(['A person answered', 'No']);
+  if (e?.keys_pressed) went.push(['Menu keys pressed', String(e.keys_pressed)]);
+  if (e?.questions_asked) went.push(['Questions it asked you', String(e.questions_asked)]);
+  if (call.owner_seconds) went.push(['You on the call', duration(call.owner_seconds)]);
+  if (e?.ended_by) went.push(['Ended by', ENDED_BY[e.ended_by]]);
+  if (call.talk_seconds) went.push(['Length', duration(call.talk_seconds)]);
   return (
-    <Card label="Outcome">
+    <Card label="How it went">
       <View style={[s.inline, s.result]}>
         <T v="h2" level={level} style={s.h2}>
           {o ? RESULT_TEXT[o.result] ?? 'Outcome' : call.status === 'failed' ? 'The call did not go through' : 'Ended without an outcome'}
@@ -237,12 +361,43 @@ export function OutcomeCard({ call, level }: { call: Call; level?: 3 }) {
       </View>
       {call.error ? <Note kind="errsum">{call.error}</Note> : null}
       {o?.summary ? <Text style={[text.body, s.summary]}>{o.summary}</Text> : null}
+      {e?.follow_up ? (
+        <Text style={[text.body, s.summary]}>
+          <Text style={s.strong}>Next: </Text>
+          {e.follow_up}
+        </Text>
+      ) : null}
       {details.map(([k, v]) => (
         <View key={k} style={s.kv}>
           <Text style={[text.base, s.kvKey]}>{label(k)}</Text>
           <Text style={[text.base, s.fill]}>{typeof v === 'string' ? v : JSON.stringify(v)}</Text>
         </View>
       ))}
+      {went.length || cost ? <Text style={[text.subhead, s.subhead]}>How it went</Text> : null}
+      {went.map(([k, v]) => (
+        <View key={k} style={s.kv}>
+          <Text style={[text.base, s.kvKey]}>{k}</Text>
+          <Text style={[text.base, s.fill, s.num]}>{v}</Text>
+        </View>
+      ))}
+      {cost ? (
+        <>
+          <View style={s.kv}>
+            <Text style={[text.base, s.kvKey]}>Estimated cost</Text>
+            <View style={s.fill}>
+              <Text style={[text.base, s.num]}>{costText(cost)}</Text>
+              <Text style={[text.fine, s.num]}>
+                {`Phone ${money(cost.parts.phone)}, hearing ${money(cost.parts.hearing)}, AI model ${
+                  cost.parts.ai == null ? 'not known' : money(cost.parts.ai)
+                }, voice ${money(cost.parts.voice)}`}
+              </Text>
+            </View>
+          </View>
+          <Text style={[text.fine, s.costNote]}>
+            {`An estimate from list prices. ${cost.complete ? '' : 'The price of your own AI service is not known, so it is left out. '}Your own providers bill it. CallEnvoy bills nothing.`}
+          </Text>
+        </>
+      ) : null}
       {call.answered_questions.length ? (
         <>
           <Text style={[text.subhead, s.subhead]}>Questions asked</Text>
@@ -271,6 +426,7 @@ export function CallRequest({ call }: { call: Call }) {
           <Text style={text.fine}>{modeLine(call)}</Text>
           {call.calling_number ? <Text style={text.fine}>{`Caller ID ${phone(call.calling_number)}`}</Text> : null}
           <Text style={text.fine}>{call.recorded ? 'Recorded' : 'Not recorded'}</Text>
+          {call.secrets_allowed?.length ? <Text style={text.fine}>{`May use: ${call.secrets_allowed.join(', ')}`}</Text> : null}
         </View>
       </Disclosure>
     </Card>
@@ -313,7 +469,10 @@ const s = StyleSheet.create({
   result: { gap: space.ml, marginBottom: space.ml, flexWrap: 'wrap' },
   summary: { marginBottom: space.m },
   kv: { flexDirection: 'row', gap: space.l, paddingVertical: space.sm, borderTopWidth: border.thin, borderTopColor: color.line },
-  kvKey: { color: color.muted, minWidth: space.x5 * 2.5 },
+  kvKey: { color: color.muted, width: space.x5 * 3.6, flexShrink: 1 },
+  num: { fontVariant: ['tabular-nums'] },
+  costNote: { marginTop: space.sm },
+  answers: { flexDirection: 'row', flexWrap: 'wrap', gap: space.sm },
   strong: { color: color.fg, fontWeight: font.weight.bold },
   answered: { borderTopWidth: border.thin, borderTopColor: color.line, paddingTop: space.m, marginTop: space.m },
 });
