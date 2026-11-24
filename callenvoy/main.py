@@ -243,6 +243,13 @@ async def get_config(user: Me):
         "mcp_url": config.public_base_url() + "/mcp",
         "voices": mcp_server.voices(k["voice_provider"]),  # the ones this user's calls can use
         "voice_provider": k["voice_provider"], "hearing": k["hearing"],
+        # The AI models of the setting ai_model, with list prices in dollars per 1M tokens (input, cached, output).
+        # "custom" (the user's own service) is offered once that provider key is saved.
+        "ai_models": [{"id": name, "about": m["about"], "price": config.PRICES["llm_1m"].get(name)}
+                      for name, m in config.LLM_MODELS.items()] +
+                     ([{"id": config.CUSTOM_LLM, "about": f"your own service: {k['providers']['llm']['model']}", "price": None}]
+                      if k["providers"]["llm"]["saved"] or (k["server_keys"] and keys.server().llm) else []),
+        "prices": config.PRICES,
         "keys": {"ready": k["ready"], "server_keys": k["server_keys"], "can_save": k["can_save"],
                  "demo_calls_left": calls.demo_calls_left(user)},
         # Limits are per user. minutes_used_today is the same number as my_minutes_today (older consoles read it).
