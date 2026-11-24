@@ -631,3 +631,52 @@ def test_inbound_long_poll_is_scoped():
             await calls.get_call(uid(), fwd["id"], wait_seconds=5)
         assert (await asyncio.wait_for(calls.get_call(b, fwd["id"]), 1))["direction"] == "inbound"
     run(go())
+
+
+def test_another_ai_service_is_checked_limited_to_known_hosts_and_used(client, fresh, monkeypatch):
+    import httpx
+
+    from callenvoy import bot, keys
+    b = new_user()
+    cb = {**owner_cookie(b), **ORIGIN}
+    asked = []
+
+    class FakeClient:
+        def __init__(self, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, url, json, headers):
+            asked.append((url, json["model"], bool(json["tools"])))
+            if headers["Authorization"] != "Bearer gk-good-key":
+                return httpx.Response(401, json={})
+            return httpx.Response(200 if json["model"] == "fast-model" else 404, json={"error": {"message": "no such model"}})
+
+    monkeypatch.setattr(keys.httpx, "AsyncClient", FakeClient)
+    good = {"base_url": "https://api.groq.com/openai/v1/", "api_key": "gk-good-key", "model": "fast-model"}
+    for change, field in (({"base_url": "https://10.0.0.5/v1"}, "base_url"), ({"base_url": "http://api.groq.com/openai/v1"}, "base_url"),
+                          ({"api_key": "gk-wrong-key"}, "api_key"), ({"model": "nope"}, "model")):
+        r = client.put(f"{API}/providers/llm", json={**good, **change}, headers=cb)
+        assert r.status_code == 400 and r.json()["field"] == field, change
+    assert len(asked) == 2  # an address outside the list is refused before any request leaves the server
+    v = client.put(f"{API}/providers/llm", json=good, headers=cb).json()
+    llm = v["providers"]["llm"]
+    assert llm["saved"] and llm["model"] == "fast-model" and llm["base_url"] == "https://api.groq.com/openai/v1"
+    assert asked[-1] == ("https://api.groq.com/openai/v1/chat/completions", "fast-model", True)
+    assert "gk-good-key" not in json.dumps(v) and "Google Gemini" in v["llm_services"]
+    creds = keys.own(b)
+    assert creds.llm == ("https://api.groq.com/openai/v1", "gk-good-key", "fast-model")
+    # used only when the user chose it; the built-in models stay on the OpenAI key
+    assert bot.thinking(creds, "custom")._settings.model == "fast-model"
+    assert bot.thinking(creds, "gpt-6.1-terra")._settings.model == "gpt-6.1-terra"
+    assert bot.thinking(keys.server(), "custom")._settings.model == config.LLM_MODEL  # none saved: the default
+    assert calls.save_profile(b, {"ai_model": "custom"})["ai_model"] == "custom"
+    # a self-hosted server may allow any address, such as a local model
+    monkeypatch.setenv("LLM_ANY_HOST", "1")
+    r = client.put(f"{API}/providers/llm", json={**good, "base_url": "http://localhost:11434/v1"}, headers=cb)
+    assert r.status_code == 200 and r.json()["providers"]["llm"]["base_url"] == "http://localhost:11434/v1"

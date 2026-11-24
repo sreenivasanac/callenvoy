@@ -248,7 +248,10 @@ def save_outcome(call_id: str, result, summary, details=None, evals: dict | None
 
 def thinking(creds, model: str | None = None):
     """The LLM of a call: the user's chosen model on the account's OpenAI key, with the request settings that
-    model needs (config.LLM_MODELS)."""
+    model needs (config.LLM_MODELS); or, when they chose it and saved one, their own OpenAI-compatible service."""
+    if model == config.CUSTOM_LLM and creds.llm:
+        base, key, name = creds.llm
+        return OpenAILLMService(api_key=key, base_url=base, settings=OpenAILLMService.Settings(model=name))
     model = model if model in config.LLM_MODELS else config.LLM_MODEL
     return OpenAILLMService(api_key=creds.openai, settings=OpenAILLMService.Settings(
         model=model, **config.LLM_MODELS[model]["settings"]))

@@ -41,6 +41,23 @@ LLM_MODELS = {
     "gpt-4.1": {"settings": {"temperature": 0}, "about": "the earlier default; OpenAI ends it on January 14, 2027"},
 }
 LLM_MODEL = "gpt-6-luna"  # the default
+CUSTOM_LLM = "custom"  # setting ai_model: the user's own OpenAI-compatible service (provider key "llm")
+# OpenAI-compatible services a user may point a call's AI at (their chat-completions base address). The server
+# sends every turn of a call to that address, so on a shared server only these known hosts are allowed: an
+# address a user types could otherwise aim the server at its own network. A self-hosted server can allow any
+# address, such as a local model, with LLM_ANY_HOST=1.
+LLM_SERVICES = {
+    "Google Gemini": "https://generativelanguage.googleapis.com/v1beta/openai",
+    "OpenRouter": "https://openrouter.ai/api/v1",
+    "Groq": "https://api.groq.com/openai/v1",
+    "Together": "https://api.together.xyz/v1",
+    "Fireworks": "https://api.fireworks.ai/inference/v1",
+    "Cerebras": "https://api.cerebras.ai/v1",
+    "DeepSeek": "https://api.deepseek.com/v1",
+    "Mistral": "https://api.mistral.ai/v1",
+    "xAI": "https://api.x.ai/v1",
+    "OpenAI": "https://api.openai.com/v1",
+}
 RECAP_MODEL = "gpt-6-luna"  # writes the outcome from the whole transcript after the call (always on the OpenAI key)
 TTS_MODEL = "s2.1-pro"
 # End of turn: Pipecat's default (LocalSmartTurnAnalyzerV3). TODO: SpeechTimeoutUserTurnStopStrategy if too slow on 2 vCPUs.
@@ -94,7 +111,7 @@ DEMO_CALLS_PER_USER = 3
 DEMO_MAX_MINUTES = 6
 DEMO_DAILY_MINUTE_CAP = 90  # all such calls of all users per day
 # Provider keys a user can save (keys.py). The required ones make real calls possible.
-PROVIDERS = ("twilio", "openai", "deepgram", "fish")
+PROVIDERS = ("twilio", "openai", "deepgram", "fish", "llm")  # llm: another AI service for the talking (optional)
 REQUIRED_PROVIDERS = ("twilio", "openai")
 HOLD_EXTENSION_MINUTES = 15
 TALK_EXTENSION_MINUTES = 2
@@ -199,7 +216,7 @@ SETTINGS: dict[str, dict] = {
     "caller_id": {"type": "choice", "choices": ["callenvoy", "own"], "default": "callenvoy"},
     "leave_voicemail": {"type": "bool", "default": True},
     "voice": {"type": "choice", "choices": VOICE_NAMES, "default": DEFAULT_VOICE},
-    "ai_model": {"type": "choice", "choices": list(LLM_MODELS), "default": LLM_MODEL},
+    "ai_model": {"type": "choice", "choices": [*LLM_MODELS, CUSTOM_LLM], "default": LLM_MODEL},
     "record_calls": {"type": "bool", "default": RECORD_CALLS_DEFAULT},
     "max_minutes": {"type": "int", "min": 1, "max": MAX_CALL_MINUTES, "default": DEFAULT_CALL_MINUTES},
     "mode": {"type": "choice", "choices": ["handle", "transfer"], "default": "handle"},
